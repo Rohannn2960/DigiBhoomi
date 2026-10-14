@@ -6,20 +6,38 @@ const mongoose = require('mongoose');
 const BASE_URL = 'http://localhost:5000';
 const PYTHON_URL = 'http://127.0.0.1:8000';
 const FIXTURES_DIR = path.resolve(__dirname, 'test_fixtures');
+const UPLOADS_DIR = path.resolve(__dirname, 'uploads');
+const EXPECTED_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+const createdDocumentIds = new Set();
+const createdStoredFilenames = new Set();
+
+async function cleanupCreatedResources() {
+  const Document = require('./models/Document');
+  if (mongoose.connection.readyState === 1 && createdDocumentIds.size > 0) {
+    await Document.deleteMany({ _id: { $in: Array.from(createdDocumentIds) } });
+  }
+  await Promise.all(Array.from(createdStoredFilenames, async (filename) => {
+    const resolvedPath = path.resolve(UPLOADS_DIR, path.basename(filename));
+    if (resolvedPath.startsWith(UPLOADS_DIR)) {
+      await fs.promises.unlink(resolvedPath).catch(() => {});
+    }
+  }));
+}
+
+function printSummary(results) {
+  console.log('\n====================================================');
+  const passed = results.filter(r => r.pass).length;
+  const total = results.length;
+  console.log(`Summary: ${passed}/${total} Acceptance Tests Passed.`);
+  console.log('====================================================\n');
+}
 
 async function runTests() {
   console.log('====================================================');
   console.log('   DigiBhoomi Phase 3 Acceptance Verification');
   console.log('====================================================\n');
 
-  try {
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/digibhoomi');
-  } catch (mErr) {
-    console.error('Failed to connect to MongoDB directly from test script:', mErr.message);
-  }
-
   const results = [];
-
   const assert = (title, condition, extra = '') => {
     if (condition) {
       console.log(`\x1b[32m✔ PASS\x1b[0m: ${title} ${extra}`);
@@ -29,6 +47,14 @@ async function runTests() {
       results.push({ title, pass: false, extra });
     }
   };
+
+  try {
+    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/digibhoomi');
+  } catch {
+    assert('MongoDB is available for acceptance testing', false, 'Connection failed.');
+    printSummary(results);
+    return;
+  }
 
   // Test 1: Service Health Checks
   try {
@@ -56,7 +82,7 @@ async function runTests() {
     const pyData = await pyRes.json();
     assert(
       'Test 2: Gemini configuration is read from environment without hardcoding',
-      pyData.geminiModel === 'gemini-2.5-flash',
+      pyData.geminiModel === EXPECTED_GEMINI_MODEL,
       `[geminiConfigured: ${pyData.geminiConfigured}]`
     );
   } catch (err) {
@@ -66,6 +92,17 @@ async function runTests() {
   // Test 3: Existing Document Upload & SHA-256 Hashing (Phase 2 preservation)
   let uploadedDoc = null;
   const englishSamplePath = path.join(FIXTURES_DIR, 'english_record.png');
+  const requiredFixtures = ['english_record.png', 'hindi_record.png', 'telugu_record.png'];
+  const missingFixtures = requiredFixtures.filter(name => !fs.existsSync(path.join(FIXTURES_DIR, name)));
+  if (missingFixtures.length > 0) {
+    assert(
+      'Required document fixtures are available',
+      false,
+      `Missing fixture(s): ${missingFixtures.join(', ')}.`
+    );
+    printSummary(results);
+    return;
+  }
   const originalBytes = fs.readFileSync(englishSamplePath);
   const expectedHash = crypto.createHash('sha256').update(originalBytes).digest('hex');
 
@@ -85,6 +122,12 @@ async function runTests() {
       uploadRes.status === 201 && uploadedDoc.fileMetadata.sha256Hash === expectedHash,
       `[ID: ${uploadedDoc._id}, Status: ${uploadedDoc.status}]`
     );
+    if (uploadRes.ok && uploadedDoc._id) {
+      createdDocumentIds.add(uploadedDoc._id);
+      if (uploadedDoc.fileMetadata?.storedFilename) {
+        createdStoredFilenames.add(uploadedDoc.fileMetadata.storedFilename);
+      }
+    }
   } catch (err) {
     assert('Test 3: Document upload', false, err.message);
   }
@@ -185,9 +228,9 @@ async function runTests() {
     }
   }
 
-  // Test 9: Unicode preservation across multilingual processing (Hindi & Telugu)
+  // Test 9: Unicode preservation for synthetic Hindi and Telugu records.
   try {
-    // 9a: Test Hindi Devanagari Unicode storage and retrieval in MongoDB
+    // 9a: Verify Hindi Devanagari Unicode storage and retrieval in MongoDB.
     const Document = require('./models/Document');
     const hindiSampleDoc = new Document({
       fileMetadata: {
@@ -202,8 +245,8 @@ async function runTests() {
       ocrResult: {
         fullText: 'खाता संख्या: 45\nखसरा संख्या: 120/4\nखातेदार का नाम: रामेश्वर शर्मा\nग्राम: रामपुर\nतहसील: झाँसी\nजिला: झाँसी\nक्षेत्रफल: 3.5 बीघा\nभूमि की श्रेणी: कृषि भूमि',
         detectedLanguage: 'HINDI',
-        engine: 'Google Gemini (gemini-2.5-flash)',
-        model: 'gemini-2.5-flash',
+        engine: 'Synthetic Unicode fixture',
+        model: 'test-fixture',
         processedAt: new Date()
       },
       landDetails: {
@@ -220,6 +263,7 @@ async function runTests() {
     });
 
     const savedHindi = await hindiSampleDoc.save();
+    createdDocumentIds.add(savedHindi._id);
     const fetchedHindiRes = await fetch(`${BASE_URL}/api/documents/${savedHindi._id}`);
     const fetchedHindi = await fetchedHindiRes.json();
 
@@ -229,12 +273,12 @@ async function runTests() {
       fetchedHindi.ocrResult?.fullText.includes('खातेदार का नाम: रामेश्वर शर्मा');
 
     assert(
-      'Test 9a: Hindi Devanagari script survives entire pipeline with 100% Unicode preservation',
+      'Test 9a: Hindi Devanagari Unicode survives MongoDB storage and retrieval',
       devanagariPreserved,
       `[Owner: "${fetchedHindi.landDetails?.ownerName?.value}", District: "${fetchedHindi.landDetails?.district?.value}"]`
     );
 
-    // 9b: Test Telugu Unicode storage and retrieval in MongoDB
+    // 9b: Verify Telugu Unicode storage and retrieval in MongoDB.
     const teluguSampleDoc = new Document({
       fileMetadata: {
         originalFilename: 'telugu_land_record_patta.png',
@@ -248,8 +292,8 @@ async function runTests() {
       ocrResult: {
         fullText: 'పట్టాదారు పేరు: వెంకటేశ్వర రావు\nసర్వే నంబరు: 108/2\nఖాతా నంబరు: 320\nగ్రామం: కొత్తపల్లి\nమండలం: అమరావతి\nజిల్లా: గుంటూరు\nవిస్తీర్ణం: 2.75 ఎకరాలు\nభూమి రకం: మాగాణి',
         detectedLanguage: 'TELUGU',
-        engine: 'Google Gemini (gemini-2.5-flash)',
-        model: 'gemini-2.5-flash',
+        engine: 'Synthetic Unicode fixture',
+        model: 'test-fixture',
         processedAt: new Date()
       },
       landDetails: {
@@ -266,6 +310,7 @@ async function runTests() {
     });
 
     const savedTelugu = await teluguSampleDoc.save();
+    createdDocumentIds.add(savedTelugu._id);
     const fetchedTeluguRes = await fetch(`${BASE_URL}/api/documents/${savedTelugu._id}`);
     const fetchedTelugu = await fetchedTeluguRes.json();
 
@@ -275,7 +320,7 @@ async function runTests() {
       fetchedTelugu.ocrResult?.fullText.includes('పట్టాదారు పేరు: వెంకటేశ్వర రావు');
 
     assert(
-      'Test 9b: Telugu script survives entire pipeline with 100% Unicode preservation',
+      'Test 9b: Telugu Unicode survives MongoDB storage and retrieval',
       teluguPreserved,
       `[Owner: "${fetchedTelugu.landDetails?.ownerName?.value}", District: "${fetchedTelugu.landDetails?.district?.value}"]`
     );
@@ -305,11 +350,11 @@ async function runTests() {
   // Test 11: Failures do not leave records stuck in "Processing"
   if (uploadedDoc) {
     try {
-      // Call Gemini when no key is configured to trigger an intentional handled error
-      const geminiFailRes = await fetch(`${BASE_URL}/api/documents/${uploadedDoc._id}/process`, {
+      // Use an invalid engine to trigger a deterministic handled processing error.
+      const invalidEngineRes = await fetch(`${BASE_URL}/api/documents/${uploadedDoc._id}/process`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ engine: 'gemini' })
+        body: JSON.stringify({ engine: 'invalid-test-engine' })
       });
 
       // Verify the record status in DB
@@ -317,8 +362,11 @@ async function runTests() {
       const checkDoc = await checkRes.json();
 
       assert(
-        'Test 11: Processing errors reset document status cleanly (not stuck in "Processing")',
-        checkDoc.status !== 'Processing' && (geminiFailRes.status === 502 || geminiFailRes.status === 400),
+        'Test 11: Invalid processing engine resets document status and records the error',
+        checkDoc.status !== 'Processing' &&
+          invalidEngineRes.status === 502 &&
+          typeof checkDoc.ocrResult?.error === 'string' &&
+          checkDoc.ocrResult.error.includes("Unknown processing engine 'invalid-test-engine'"),
         `[Status after handled failure: "${checkDoc.status}", Error recorded: "${checkDoc.ocrResult?.error?.substring(0, 40)}..."]`
       );
     } catch (err) {
@@ -342,15 +390,22 @@ async function runTests() {
     }
   }
 
-  console.log('\n====================================================');
-  const passed = results.filter(r => r.pass).length;
-  const total = results.length;
-  console.log(`Summary: ${passed}/${total} Acceptance Tests Passed.`);
-  console.log('====================================================\n');
-
-  try {
-    await mongoose.disconnect();
-  } catch (_) {}
+  printSummary(results);
 }
 
-runTests().catch(console.error);
+runTests()
+  .catch((err) => {
+    console.error('Acceptance suite aborted:', err.message);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    try {
+      await cleanupCreatedResources();
+    } catch (err) {
+      console.error('Acceptance cleanup failed:', err.message);
+      process.exitCode = 1;
+    }
+    try {
+      await mongoose.disconnect();
+    } catch (_) {}
+  });

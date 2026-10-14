@@ -260,7 +260,7 @@ export default function ReviewPage() {
             onChange={(e) => setSelectedEngine(e.target.value)}
             disabled={isProcessing}
           >
-            <option value="gemini">Google Gemini 2.5 Flash (Primary)</option>
+            <option value="gemini">Google Gemini AI (Primary Engine)</option>
             <option value="local">Local OCR Engine (EasyOCR Fallback)</option>
           </select>
 

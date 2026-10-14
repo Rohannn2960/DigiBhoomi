@@ -34,7 +34,7 @@ const DocumentSchema = new mongoose.Schema({
     fullText: { type: String, default: '' },
     detectedLanguage: { type: String, default: null },
     engine: { type: String, default: null }, // e.g. 'Google Gemini', 'EasyOCR'
-    model: { type: String, default: null },  // e.g. 'gemini-2.5-flash'
+    model: { type: String, default: null },  // e.g. 'gemini-3.5-flash-lite'
     pageCount: { type: Number, default: 1 },
     processedAt: { type: Date, default: null },
     processingTimeMs: { type: Number, default: null },

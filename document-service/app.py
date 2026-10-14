@@ -48,11 +48,22 @@ app.add_middleware(
 SUPPORTED_LANGUAGES = ["English", "Hindi", "Telugu", "Marathi", "Tamil"]
 
 
+def reload_env():
+    """Safely loads or reloads environment variables from .env files with override."""
+    load_dotenv(override=True)
+    server_env = os.path.join(os.path.dirname(__file__), "..", "server", ".env")
+    if os.path.exists(server_env):
+        load_dotenv(server_env, override=True)
+
+reload_env()
+
+
 @app.get("/health")
 def health_check():
     """Health check endpoint reporting Gemini configuration status and available engines."""
+    reload_env()
     has_gemini_key = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
-    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
     return {
         "status": "healthy",
@@ -75,9 +86,10 @@ async def process_document(
 ):
     """
     Multimodal document processing endpoint.
-    - engine='gemini' (default): Uses Google Gemini 2.5 Flash for high-fidelity extraction.
+    - engine='gemini' (default): Uses Google Gemini 3.5 Flash Lite for high-fidelity extraction.
     - engine='local': Uses offline local OCR engine.
     """
+    reload_env()
     mime = (file.content_type or "").lower()
     filename = (file.filename or "").lower()
 

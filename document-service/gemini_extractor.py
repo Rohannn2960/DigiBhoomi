@@ -6,9 +6,12 @@ transcription and structured field extraction with strict JSON schema adherence.
 
 import os
 import json
-from typing import Dict, Any, Optional
+import time
+from typing import Any, Dict, Optional
+import httpx
 from pydantic import BaseModel, Field
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 # Pydantic schema for structured output from Gemini
@@ -46,6 +49,40 @@ CRITICAL EXTRACTION RULES:
 6. Return only the requested structured JSON conforming to the schema."""
 
 
+def _retry_reason(error: Exception) -> Optional[str]:
+    """Classify only provider/network failures safe to retry."""
+    if isinstance(error, genai_errors.APIError):
+        if error.code not in (429, 503):
+            return None
+        message = (error.message or "").lower()
+        non_retryable_markers = (
+            "invalid model",
+            "model not found",
+            "not found",
+            "unauthenticated",
+            "permission denied",
+        )
+        if any(marker in message for marker in non_retryable_markers):
+            return None
+        return f"provider HTTP {error.code}"
+
+    if isinstance(error, (httpx.TimeoutException, httpx.NetworkError, TimeoutError, ConnectionError)):
+        return "transient network error"
+
+    return None
+
+
+def _request_error(error: Exception) -> RuntimeError:
+    """Create a safe public error while retaining the original cause for logs/debugging."""
+    if isinstance(error, genai_errors.APIError):
+        detail = f"provider HTTP {error.code}"
+    elif isinstance(error, (httpx.TimeoutException, httpx.NetworkError, TimeoutError, ConnectionError)):
+        detail = "transient network error"
+    else:
+        detail = "unexpected SDK error"
+    return RuntimeError(f"Gemini API request failed ({detail})")
+
+
 def extract_with_gemini(file_bytes: bytes, mime_type: str) -> Dict[str, Any]:
     """
     Submits document directly to Gemini multimodal API and returns structured land details.
@@ -56,7 +93,7 @@ def extract_with_gemini(file_bytes: bytes, mime_type: str) -> Dict[str, Any]:
             "GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in server/.env or your environment."
         )
 
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
     # Initialize official GenAI client
     client = genai.Client(api_key=api_key)
@@ -74,28 +111,37 @@ def extract_with_gemini(file_bytes: bytes, mime_type: str) -> Dict[str, Any]:
         temperature=0.1 # Low temperature for factual extraction
     )
 
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[SYSTEM_PROMPT, document_part],
-            config=config
-        )
-    except Exception as e:
-        raise RuntimeError(f"Gemini API request failed: {str(e)}")
+    response = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[SYSTEM_PROMPT, document_part],
+                config=config
+            )
+            break
+        except Exception as e:
+            if _retry_reason(e) is None or attempt == 2:
+                raise _request_error(e) from e
+            time.sleep(2 ** attempt)
 
-    if not response.text:
+    if response is None or not response.text:
         raise RuntimeError("Gemini returned an empty response.")
 
     try:
         raw_result = json.loads(response.text)
     except Exception as e:
-        raise RuntimeError(f"Failed to parse Gemini JSON response: {str(e)}")
+        raise RuntimeError("Gemini returned malformed JSON.") from e
+
+    try:
+        validated_result = DocumentExtractionResult.model_validate(raw_result)
+    except Exception as e:
+        raise RuntimeError("Gemini returned JSON that does not match the extraction schema.") from e
 
     # Format into standard DigiBhoomi landDetails schema
-    def _to_field(item: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        item = item or {}
-        val = (item.get("value") or "").strip()
-        raw = item.get("verbatim_raw_text")
+    def _to_field(item: Optional[ExtractedFieldItem]) -> Dict[str, Any]:
+        val = (item.value or "").strip() if item else ""
+        raw = item.verbatim_raw_text if item else None
         is_present = bool(val)
         return {
             "value": val if is_present else "",
@@ -107,18 +153,17 @@ def extract_with_gemini(file_bytes: bytes, mime_type: str) -> Dict[str, Any]:
             "reviewStatus": "Unreviewed"
         }
 
-    area_item = raw_result.get("land_area") or {}
-    area_val = (area_item.get("value") or "").strip()
-    area_unit = area_item.get("unit") or "Acre"
-    area_raw = area_item.get("verbatim_raw_text")
+    area_val = (validated_result.land_area.value or "").strip()
+    area_unit = validated_result.land_area.unit or "Acre"
+    area_raw = validated_result.land_area.verbatim_raw_text
 
-    survey_field = _to_field(raw_result.get("survey_khasra_number"))
+    survey_field = _to_field(validated_result.survey_khasra_number)
 
     land_details = {
-        "ownerName": _to_field(raw_result.get("owner_name")),
+        "ownerName": _to_field(validated_result.owner_name),
         "surveyNumber": survey_field,
         "khasraNumber": survey_field,
-        "khataNumber": _to_field(raw_result.get("khata_khewat_number")),
+        "khataNumber": _to_field(validated_result.khata_khewat_number),
         "area": {
             "value": area_val,
             "rawText": area_raw if area_raw else None,
@@ -145,15 +190,15 @@ def extract_with_gemini(file_bytes: bytes, mime_type: str) -> Dict[str, Any]:
             "isFlagged": not bool(area_val),
             "reviewStatus": "Unreviewed"
         },
-        "village": _to_field(raw_result.get("village")),
-        "tehsil": _to_field(raw_result.get("tehsil_mandal")),
-        "district": _to_field(raw_result.get("district")),
-        "landClassification": _to_field(raw_result.get("landClassification") or raw_result.get("land_classification"))
+        "village": _to_field(validated_result.village),
+        "tehsil": _to_field(validated_result.tehsil_mandal),
+        "district": _to_field(validated_result.district),
+        "landClassification": _to_field(validated_result.land_classification)
     }
 
     return {
-        "fullText": raw_result.get("full_transcribed_text", ""),
-        "detectedLanguage": raw_result.get("detected_language", "Unknown"),
+        "fullText": validated_result.full_transcribed_text,
+        "detectedLanguage": validated_result.detected_language,
         "model": model_name,
         "engine": f"Google Gemini ({model_name})",
         "landDetails": land_details

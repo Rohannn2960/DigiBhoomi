@@ -12,7 +12,7 @@ DigiBhoomi is a prototype system designed to digitize, validate, and preserve le
 - **Backend Orchestrator:** Node.js, Express, Multer
 - **Database:** MongoDB, Mongoose
 - **Document Understanding & Extraction Service:** Python 3.11+, FastAPI, Uvicorn
-  - **Primary Engine:** Google Gemini (`gemini-2.5-flash`) via the official Google Gen AI SDK (`google-genai`) with strict Pydantic JSON schema adherence
+  - **Primary Engine:** Google Gemini (`gemini-3.5-flash-lite`) via the official Google Gen AI SDK (`google-genai`) with strict Pydantic JSON schema adherence
   - **Fallback / Local Baseline Engine:** EasyOCR (CPU PyTorch) with OpenCV CLAHE contrast enhancement and `pypdfium2` PDF rasterization
 - **Security & Storage:** SHA-256 cryptographic hashing (`crypto`), UUID storage filenames, path-traversal prevention
 
@@ -45,7 +45,7 @@ PYTHON_OCR_SERVICE_URL=http://127.0.0.1:8000
 
 # Google Gemini API Configuration (Primary Engine)
 GEMINI_API_KEY=your_actual_gemini_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.5-flash-lite
 ```
 
 > **Note:** The Gemini API key is read strictly on the server side and is never exposed to the React frontend or API responses.
