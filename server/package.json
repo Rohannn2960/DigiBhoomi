@@ -1,0 +1,17 @@
+{
+  "name": "digibhoomi-server",
+  "version": "1.0.0",
+  "description": "Backend API for DigiBhoomi Land Record Digitization and Validation System",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mongoose": "^9.11.2",
+    "multer": "^2.4.0"
+  }
+}
