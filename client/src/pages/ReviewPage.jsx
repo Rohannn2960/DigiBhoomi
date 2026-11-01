@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { fetchDocumentById, getDocumentFileUrl, processDocument } from '../services/api';
-import { getRecordById } from '../data/mockRecords';
+import { assignDocument, fetchDocumentById, fetchUsers, getDocumentFileUrl, processDocument, reviewDocument, verifyDocumentIntegrity } from '../services/api';
+import { useAuth } from '../context/auth-context';
 import DocumentViewer from '../components/DocumentViewer';
 import StatusBadge from '../components/StatusBadge';
 import { 
@@ -42,12 +42,24 @@ const normalizeLandDetails = (details = {}) => ({
 export default function ReviewPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const [record, setRecord] = useState(null);
   const [formData, setFormData] = useState(normalizeLandDetails());
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [saveMessage, setSaveMessage] = useState(null);
+  const [integrityCheck, setIntegrityCheck] = useState(null);
+  const [isVerifyingIntegrity, setIsVerifyingIntegrity] = useState(false);
+  const [reviewRemarks, setReviewRemarks] = useState('');
+  const [reviewError, setReviewError] = useState(null);
+  const [isSavingReview, setIsSavingReview] = useState(false);
+  const [officers, setOfficers] = useState([]);
+  const [isAssigning, setIsAssigning] = useState(false);
+
+  const recordIsAwaitingReview = record?.status === 'Needs review';
+  const canReview = ['Officer', 'Admin'].includes(user?.role);
+  const canEditReview = canReview && recordIsAwaitingReview;
 
   // Phase 3 OCR State
   const [isProcessing, setIsProcessing] = useState(false);
@@ -71,27 +83,30 @@ export default function ReviewPage() {
         }
         setRecord(doc);
         setFormData(normalizeLandDetails(doc.landDetails));
+        setIntegrityCheck(doc.integrityVerification || null);
+        setReviewRemarks(doc.reviewRemarks || '');
         setIsLoading(false);
       })
       .catch(apiErr => {
-        // Fallback for mock records if user clicked a mock ID
-        const mockDoc = getRecordById(id);
-        if (mockDoc && mockDoc._id === id) {
-          if (!isMounted) return;
-          setRecord(mockDoc);
-          setFormData(normalizeLandDetails(mockDoc.landDetails));
-          setIsLoading(false);
-        } else {
-          if (!isMounted) return;
-          setError(apiErr.message || 'Document record not found.');
-          setIsLoading(false);
-        }
+        if (!isMounted) return;
+        setError(apiErr.message || 'Document record not found.');
+        setIsLoading(false);
       });
 
     return () => { isMounted = false; };
   }, [id]);
 
+  useEffect(() => {
+    if (user?.role !== 'Admin') return undefined;
+    let active = true;
+    fetchUsers()
+      .then(users => { if (active) setOfficers(users.filter(candidate => candidate.role === 'Officer')); })
+      .catch(requestError => { if (active) setReviewError(requestError.message); });
+    return () => { active = false; };
+  }, [user?.role]);
+
   const handleFieldChange = (fieldKey, subKey, value) => {
+    if (!canEditReview) return;
     setFormData(prev => ({
       ...prev,
       [fieldKey]: {
@@ -102,19 +117,48 @@ export default function ReviewPage() {
     }));
   };
 
-  const handleSave = () => {
-    setSaveMessage('Field updates saved to local review state.');
-    setTimeout(() => setSaveMessage(null), 3000);
+  const handleReviewAction = async (action) => {
+    if (!record?._id || !canEditReview) return;
+    setIsSavingReview(true);
+    setReviewError(null);
+    try {
+      const updatedDoc = await reviewDocument(record._id, {
+        action,
+        remarks: reviewRemarks,
+        landDetails: formData
+      });
+      setRecord(updatedDoc);
+      setFormData(normalizeLandDetails(updatedDoc.landDetails));
+      setReviewRemarks(updatedDoc.reviewRemarks || '');
+      setSaveMessage(action === 'save'
+        ? 'Review changes saved.'
+        : action === 'approve' ? 'Document approved.' : 'Document rejected.');
+    } catch (requestError) {
+      setReviewError(requestError.message || 'Unable to save review.');
+    } finally {
+      setIsSavingReview(false);
+    }
   };
 
-  const handleVerify = () => {
-    setRecord(prev => ({ ...prev, status: 'Verified' }));
-    setSaveMessage('Document marked as Verified!');
-    setTimeout(() => setSaveMessage(null), 3000);
+  const handleSave = () => handleReviewAction('save');
+  const handleVerify = () => handleReviewAction('approve');
+  const handleReject = () => handleReviewAction('reject');
+
+  const handleAssignOfficer = async (event) => {
+    setIsAssigning(true);
+    setReviewError(null);
+    try {
+      const result = await assignDocument(record._id, event.target.value || null);
+      setRecord(current => ({ ...current, assignedOfficerId: result.assignedOfficerId }));
+    } catch (requestError) {
+      setReviewError(requestError.message || 'Unable to update assignment.');
+    } finally {
+      setIsAssigning(false);
+    }
   };
 
   const handleRunOcr = async () => {
-    if (!record || !record._id) return;
+    if (!record || !record._id || !canReview) return;
     setIsProcessing(true);
     setProcessingError(null);
     setSaveMessage(null);
@@ -137,6 +181,23 @@ export default function ReviewPage() {
       setProcessingError(err.message || 'Failed to process document.');
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  const handleVerifyIntegrity = async () => {
+    if (!record?._id) return;
+    setIsVerifyingIntegrity(true);
+    try {
+      const result = await verifyDocumentIntegrity(record._id);
+      setIntegrityCheck(result);
+    } catch {
+      setIntegrityCheck({
+        status: 'HASH_UNAVAILABLE',
+        calculatedHash: null,
+        verifiedAt: new Date().toISOString()
+      });
+    } finally {
+      setIsVerifyingIntegrity(false);
     }
   };
 
@@ -178,6 +239,21 @@ export default function ReviewPage() {
       </div>
     );
   }
+
+  const integrityStatus = integrityCheck?.status ||
+    (record.fileMetadata?.sha256Hash ? 'NOT_VERIFIED' : 'HASH_UNAVAILABLE');
+  const integrityColor = integrityStatus === 'INTEGRITY_VERIFIED'
+    ? '#15803d'
+    : integrityStatus === 'INTEGRITY_FAILED'
+      ? '#b91c1c'
+      : '#64748b';
+  const integrityLabel = integrityStatus === 'INTEGRITY_VERIFIED'
+    ? 'Integrity Verified'
+    : integrityStatus === 'INTEGRITY_FAILED'
+      ? 'Integrity Failed'
+      : integrityStatus === 'NOT_VERIFIED'
+        ? 'Not verified'
+        : 'Hash Unavailable';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 120px)' }}>
@@ -223,16 +299,24 @@ export default function ReviewPage() {
               {saveMessage}
             </span>
           )}
-          <button onClick={handleSave} className="btn btn-secondary">
-            <Save size={16} /> Save Edits
-          </button>
-          <button onClick={handleVerify} className="btn btn-success">
-            <CheckCircle size={16} /> Approve & Verify
-          </button>
+          {canEditReview && (
+            <>
+              <button onClick={handleSave} className="btn btn-secondary" disabled={isSavingReview}>
+                <Save size={16} /> Save Edits
+              </button>
+              <button onClick={handleReject} className="btn btn-secondary" disabled={isSavingReview}>
+                Reject
+              </button>
+              <button onClick={handleVerify} className="btn btn-success" disabled={isSavingReview}>
+                <CheckCircle size={16} /> Approve
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {/* Phase 3 OCR Extraction Action Panel */}
+      {canReview && (
       <div 
         style={{ 
           background: '#ffffff', 
@@ -301,6 +385,65 @@ export default function ReviewPage() {
           </button>
         </div>
       </div>
+      )}
+
+      {user?.role === 'Admin' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+          <label htmlFor="officer-assignment" style={{ fontSize: '0.85rem', fontWeight: 600 }}>Assigned officer</label>
+          <select
+            id="officer-assignment"
+            className="field-input"
+            style={{ width: 'auto', minWidth: '220px' }}
+            value={record.assignedOfficerId?.toString() || ''}
+            onChange={handleAssignOfficer}
+            disabled={isAssigning}
+          >
+            <option value="">Unassigned</option>
+            {officers.map(officer => <option key={officer.id} value={officer.id}>{officer.displayName} · {officer.email}</option>)}
+          </select>
+        </div>
+      )}
+
+      {reviewError && <p role="alert" style={{ color: '#b91c1c', marginBottom: '0.75rem' }}>{reviewError}</p>}
+
+      <section
+        aria-live="polite"
+        style={{
+          background: '#ffffff',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius)',
+          padding: '0.75rem 1rem',
+          marginBottom: '0.75rem'
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0, flex: '1 1 320px' }}>
+            <strong>Document Integrity</strong>
+            <div style={{ marginTop: '0.35rem', fontSize: '0.8rem' }}>
+              SHA-256: <code style={{ overflowWrap: 'anywhere' }}>{record.fileMetadata?.sha256Hash || 'Unavailable'}</code>
+            </div>
+            <div style={{ marginTop: '0.25rem', color: integrityColor, fontSize: '0.85rem', fontWeight: 600 }}>
+              {integrityLabel}
+            </div>
+            <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+              Last verification: {integrityCheck?.verifiedAt
+                ? new Date(integrityCheck.verifiedAt).toLocaleString()
+                : 'Not yet verified'}
+            </div>
+          </div>
+          <button
+            onClick={handleVerifyIntegrity}
+            className="btn btn-secondary"
+            disabled={isVerifyingIntegrity}
+          >
+            {isVerifyingIntegrity ? <Loader size={16} className="spin" /> : <CheckCircle size={16} />}
+            {isVerifyingIntegrity ? 'Verifying...' : 'Verify Document Integrity'}
+          </button>
+        </div>
+        <div style={{ marginTop: '0.4rem', color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+          A matching hash confirms the file bytes are unchanged; it does not establish legal authenticity or ownership.
+        </div>
+      </section>
 
       {/* Processing Error Notice */}
       {processingError && (
@@ -424,6 +567,7 @@ export default function ReviewPage() {
                 value={formData.ownerName.value || ''}
                 onChange={(e) => handleFieldChange('ownerName', 'value', e.target.value)}
                 placeholder="Pending extraction"
+                disabled={!canEditReview}
               />
               {formData.ownerName.rawOcrText && (
                 <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '3px' }}>
@@ -449,6 +593,7 @@ export default function ReviewPage() {
                   value={formData.khasraNumber.value || ''}
                   onChange={(e) => handleFieldChange('khasraNumber', 'value', e.target.value)}
                   placeholder="e.g. 142/2 or 154/2"
+                  disabled={!canEditReview}
                 />
               </div>
 
@@ -467,6 +612,7 @@ export default function ReviewPage() {
                   value={formData.khataNumber.value || ''}
                   onChange={(e) => handleFieldChange('khataNumber', 'value', e.target.value)}
                   placeholder="e.g. 00058 or 402/A"
+                  disabled={!canEditReview}
                 />
               </div>
             </div>
@@ -495,11 +641,13 @@ export default function ReviewPage() {
                   value={formData.landArea.value || ''}
                   onChange={(e) => handleFieldChange('landArea', 'value', e.target.value)}
                   placeholder="e.g. 2.50 or 1.4500"
+                  disabled={!canEditReview}
                 />
                 <select
                   className="field-input"
                   value={formData.landArea.unit || 'Acre'}
                   onChange={(e) => handleFieldChange('landArea', 'unit', e.target.value)}
+                  disabled={!canEditReview}
                 >
                   <option value="Acre">Acre</option>
                   <option value="Hectare">Hectare</option>
@@ -526,6 +674,7 @@ export default function ReviewPage() {
                   value={formData.district.value || ''}
                   onChange={(e) => handleFieldChange('district', 'value', e.target.value)}
                   placeholder="District"
+                  disabled={!canEditReview}
                 />
               </div>
 
@@ -537,6 +686,7 @@ export default function ReviewPage() {
                   value={formData.tehsil.value || ''}
                   onChange={(e) => handleFieldChange('tehsil', 'value', e.target.value)}
                   placeholder="Tehsil / Mandal"
+                  disabled={!canEditReview}
                 />
               </div>
 
@@ -548,6 +698,7 @@ export default function ReviewPage() {
                   value={formData.village.value || ''}
                   onChange={(e) => handleFieldChange('village', 'value', e.target.value)}
                   placeholder="Village"
+                  disabled={!canEditReview}
                 />
               </div>
             </div>
@@ -570,6 +721,21 @@ export default function ReviewPage() {
                 value={formData.landClassification.value || ''}
                 onChange={(e) => handleFieldChange('landClassification', 'value', e.target.value)}
                 placeholder="e.g. Agricultural / Dry / Wet / Commercial"
+                disabled={!canEditReview}
+              />
+            </div>
+
+            <div className="field-group">
+              <label className="field-label" htmlFor="review-remarks">Review remarks</label>
+              <textarea
+                id="review-remarks"
+                className="field-input"
+                rows="3"
+                maxLength={2000}
+                value={reviewRemarks}
+                onChange={event => setReviewRemarks(event.target.value)}
+                disabled={!canEditReview}
+                placeholder={canEditReview ? 'Add review notes' : 'No review remarks'}
               />
             </div>
           </div>

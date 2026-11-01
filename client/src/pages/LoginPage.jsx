@@ -1,15 +1,32 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { ShieldCheck, ArrowRight, UserCheck } from 'lucide-react';
+import { useAuth } from '../context/auth-context';
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const [role, setRole] = useState('officer');
+  const location = useLocation();
+  const { signIn, signUp } = useAuth();
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [displayName, setDisplayName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleLogin = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    // Day 1: Mock login, straight to records list
-    navigate('/records');
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      if (isRegistering) await signUp({ displayName, email, password });
+      else await signIn({ email, password });
+      navigate(location.state?.from || '/records', { replace: true });
+    } catch (requestError) {
+      setError(requestError.message || 'Unable to sign in.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -31,55 +48,58 @@ export default function LoginPage() {
           >
             <ShieldCheck size={28} />
           </div>
-          <h2 style={{ fontSize: '1.4rem', marginBottom: '0.25rem' }}>DigiBhoomi Portal</h2>
+          <h2 style={{ fontSize: '1.4rem', marginBottom: '0.25rem' }}>{isRegistering ? 'Create Citizen Account' : 'DigiBhoomi Portal'}</h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
             Land Record Digitization & Verification System (SIH 26018)
           </p>
         </div>
 
-        <form onSubmit={handleLogin}>
+        <form onSubmit={handleSubmit}>
+          {isRegistering && (
+            <div className="field-group">
+              <label className="field-label" htmlFor="displayName">Full name</label>
+              <input id="displayName" className="field-input" autoComplete="name" maxLength={100} required value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+            </div>
+          )}
           <div className="field-group">
-            <label className="field-label">Portal Role (Mock)</label>
-            <select 
-              className="field-input" 
-              value={role} 
-              onChange={(e) => setRole(e.target.value)}
-            >
-              <option value="officer">Revenue Inspector / Tehsildar (Reviewer)</option>
-              <option value="clerk">Record Room Data Entry Clerk</option>
-              <option value="admin">District Land Administrator</option>
-            </select>
-          </div>
-
-          <div className="field-group">
-            <label className="field-label">Officer Email</label>
+            <label className="field-label" htmlFor="email">Email</label>
             <input 
+              id="email"
               type="email" 
               className="field-input" 
-              defaultValue="officer.revenue@up.gov.in" 
-              readOnly 
+              autoComplete="email"
+              required
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
             />
           </div>
 
-          <div className="field-group" style={{ marginBottom: '1.75rem' }}>
-            <label className="field-label">Password</label>
+          <div className="field-group" style={{ marginBottom: '1rem' }}>
+            <label className="field-label" htmlFor="password">Password</label>
             <input 
+              id="password"
               type="password" 
               className="field-input" 
-              defaultValue="••••••••••••" 
-              readOnly 
+              autoComplete={isRegistering ? 'new-password' : 'current-password'}
+              minLength={isRegistering ? 12 : undefined}
+              maxLength={256}
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
             />
           </div>
 
-          <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}>
-            <UserCheck size={18} /> Enter Portal <ArrowRight size={16} />
+          {error && <p role="alert" style={{ color: '#b91c1c', fontSize: '0.85rem' }}>{error}</p>}
+
+          <button type="submit" className="btn btn-primary" disabled={isSubmitting} style={{ width: '100%', justifyContent: 'center' }}>
+            <UserCheck size={18} /> {isSubmitting ? 'Please wait...' : isRegistering ? 'Create Citizen Account' : 'Sign In'} <ArrowRight size={16} />
           </button>
         </form>
 
         <div style={{ marginTop: '1.5rem', textAlign: 'center', borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
-          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            Day 1 Prototype: Authentication bypassed for evaluation.
-          </span>
+          <button type="button" className="btn btn-secondary" onClick={() => { setIsRegistering(value => !value); setError(null); }}>
+            {isRegistering ? 'Already registered? Sign in' : 'Register as a Citizen'}
+          </button>
         </div>
       </div>
     </div>

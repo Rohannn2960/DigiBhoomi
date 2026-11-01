@@ -2,9 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import StatusBadge from '../components/StatusBadge';
 import { fetchDocuments } from '../services/api';
+import { useAuth } from '../context/auth-context';
 import { Upload, Eye, FileText, Search, X, Loader, AlertCircle, RefreshCw } from 'lucide-react';
 
 export default function RecordsListPage() {
+  const { user } = useAuth();
+  const canUpload = ['Citizen', 'Admin'].includes(user?.role);
   const [records, setRecords] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -54,9 +57,13 @@ export default function RecordsListPage() {
     <div>
       <div className="page-header">
         <div>
-          <h1 className="page-title">Land Records Repository</h1>
+          <h1 className="page-title">{user?.role === 'Officer' ? 'Assigned Document Reviews' : 'Land Records Repository'}</h1>
           <p className="page-description">
-            Digitized Jamabandi, Khasra, Khatauni, and 7/12 records stored in MongoDB.
+            {user?.role === 'Officer'
+              ? 'Documents assigned to your officer account.'
+              : user?.role === 'Citizen'
+                ? 'Your uploaded land records and their processing status.'
+                : 'Authorized system-wide land records.'}
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.75rem' }}>
@@ -68,9 +75,11 @@ export default function RecordsListPage() {
           >
             <RefreshCw size={16} className={isLoading ? 'spin' : ''} /> Refresh
           </button>
-          <Link to="/upload" className="btn btn-primary">
-            <Upload size={16} /> Upload New Record
-          </Link>
+          {canUpload && (
+            <Link to="/upload" className="btn btn-primary">
+              <Upload size={16} /> Upload New Record
+            </Link>
+          )}
         </div>
       </div>
 
@@ -131,6 +140,7 @@ export default function RecordsListPage() {
             { label: 'Processing', value: 'Processing', count: records.filter(r => r.status === 'Processing').length },
             { label: 'Needs Review', value: 'Needs review', count: records.filter(r => r.status === 'Needs review').length },
             { label: 'Verified', value: 'Verified', count: records.filter(r => r.status === 'Verified').length },
+            { label: 'Rejected', value: 'Rejected', count: records.filter(r => r.status === 'Rejected').length },
           ].map(tab => (
             <button
               key={tab.value}
@@ -158,9 +168,11 @@ export default function RecordsListPage() {
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', maxWidth: '440px', margin: '0 auto 1.5rem' }}>
             No digitized land records have been uploaded to MongoDB yet. Upload a legacy land deed, Jamabandi, or Khatauni to get started.
           </p>
-          <Link to="/upload" className="btn btn-primary">
-            <Upload size={16} /> Upload First Document
-          </Link>
+          {canUpload && (
+            <Link to="/upload" className="btn btn-primary">
+              <Upload size={16} /> Upload First Document
+            </Link>
+          )}
         </div>
       ) : (
         /* Table of Real Documents */
@@ -234,7 +246,7 @@ export default function RecordsListPage() {
                         className="btn btn-secondary" 
                         style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
                       >
-                        <Eye size={14} /> Review
+                        <Eye size={14} /> {user?.role === 'Citizen' ? 'View Details' : 'Open Review'}
                       </Link>
                     </td>
                   </tr>
