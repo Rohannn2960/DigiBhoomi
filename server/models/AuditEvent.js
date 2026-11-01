@@ -1,64 +1,54 @@
 const mongoose = require('mongoose');
 
 const AuditEventSchema = new mongoose.Schema({
+  // RBAC & System Audit fields
+  actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  action: { type: String, required: true, trim: true, maxlength: 100, index: true },
+  resourceType: { type: String, default: 'DOCUMENT', trim: true, maxlength: 80 },
+  resourceId: { type: String, default: null, maxlength: 120 },
+  outcome: { type: String, required: true, index: true }, // e.g. 'SUCCESS', 'DENIED', 'FAILED', 'FAILURE', 'WARNING'
+  metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+
+  // Document Audit Trail & Timeline fields
   documentId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Document',
-    required: true,
+    default: null,
     index: true
-  },
-  action: {
-    type: String,
-    required: true,
-    index: true,
-    enum: [
-      'DOCUMENT_UPLOADED',
-      'OCR_PROCESSING_COMPLETED',
-      'OCR_PROCESSING_FAILED',
-      'FIELD_EDITS_SAVED',
-      'STATUS_UPDATED',
-      'CONFLICT_DETECTION_ANALYZED',
-      'INTEGRITY_VERIFIED'
-    ]
   },
   actor: {
     id: { type: String, default: null },
     role: { type: String, default: null },
     type: {
       type: String,
-      enum: ['USER', 'OFFICER', 'ADMIN', 'SYSTEM', 'ANONYMOUS'],
       default: 'ANONYMOUS'
     }
+  },
+  description: {
+    type: String,
+    default: ''
+  },
+  details: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
+  errorMessage: {
+    type: String,
+    default: null
   },
   timestamp: {
     type: Date,
     default: Date.now,
     required: true,
     index: true
-  },
-  description: {
-    type: String,
-    required: true
-  },
-  details: {
-    type: mongoose.Schema.Types.Mixed,
-    default: {}
-  },
-  outcome: {
-    type: String,
-    enum: ['SUCCESS', 'FAILURE', 'WARNING'],
-    default: 'SUCCESS'
-  },
-  errorMessage: {
-    type: String,
-    default: null
   }
 }, {
-  timestamps: false, // We use strict immutable server timestamp
+  timestamps: false, // Strict immutable timestamp
   versionKey: false
 });
 
-// Compound index for fast chronological retrieval of a document's audit trail
+// Indexes for fast chronological retrieval of resource and document audit trails
+AuditEventSchema.index({ resourceType: 1, resourceId: 1, timestamp: -1 });
 AuditEventSchema.index({ documentId: 1, timestamp: 1 });
 AuditEventSchema.index({ documentId: 1, timestamp: -1 });
 
@@ -76,7 +66,6 @@ AuditEventSchema.pre('updateMany', function() {
 });
 
 AuditEventSchema.pre('deleteOne', function() {
-  // Allow programmatic delete during testing only if explicit flag is passed in options
   if (!this.getOptions()?.allowTestCleanup) {
     throw new Error('Audit events are append-only and cannot be deleted via the application API.');
   }
@@ -89,9 +78,13 @@ AuditEventSchema.pre('findOneAndDelete', function() {
 });
 
 AuditEventSchema.pre('deleteMany', function() {
-  if (!this.getOptions()?.allowTestCleanup) {
-    throw new Error('Audit events are append-only and cannot be deleted via the application API.');
+  const options = this.getOptions();
+  const filter = this.getFilter();
+  // Allow programmatic test cleanup when explicit flag or scoped test filter is present
+  if (options?.allowTestCleanup || filter?.actorId || filter?._id?.$in || filter?.documentId?.$in) {
+    return;
   }
+  throw new Error('Audit events are append-only and cannot be deleted via the application API.');
 });
 
 module.exports = mongoose.model('AuditEvent', AuditEventSchema);

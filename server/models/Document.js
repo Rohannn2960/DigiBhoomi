@@ -22,11 +22,23 @@ const DocumentSchema = new mongoose.Schema({
     mimeType: { type: String, required: true },
     sizeBytes: { type: Number, required: true },
     sha256Hash: { type: String, required: true, index: true },
+    hashAlgorithm: { type: String, enum: ['SHA-256'], default: 'SHA-256' },
     storagePath: { type: String, required: true } // Internal server path, hidden in toJSON
+  },
+  ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  assignedOfficerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  integrityVerification: {
+    status: {
+      type: String,
+      enum: ['INTEGRITY_VERIFIED', 'INTEGRITY_FAILED', 'HASH_UNAVAILABLE'],
+      default: null
+    },
+    calculatedHash: { type: String, default: null },
+    verifiedAt: { type: Date, default: null }
   },
   status: {
     type: String,
-    enum: ['Uploaded', 'Processing', 'Needs review', 'Verified'],
+    enum: ['Uploaded', 'Processing', 'Needs review', 'Verified', 'Rejected'],
     default: 'Uploaded',
     index: true
   },
@@ -125,7 +137,10 @@ const DocumentSchema = new mongoose.Schema({
     tehsil: { type: ExtractedFieldSchema, default: () => ({}) },
     district: { type: ExtractedFieldSchema, default: () => ({}) },
     landClassification: { type: ExtractedFieldSchema, default: () => ({}) }
-  }
+  },
+  reviewRemarks: { type: String, default: '', maxlength: 2000 },
+  reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  reviewedAt: { type: Date, default: null }
 }, { 
   timestamps: true,
   toJSON: {

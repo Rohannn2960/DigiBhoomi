@@ -9,86 +9,14 @@ const {
   CURRENT_EMBEDDING_DIMENSIONS
 } = require('../services/semanticSearchService');
 const SemanticEmbedding = require('../models/SemanticEmbedding');
-
-// =========================================================================
-// RBAC INTEGRATION HOOK POINT:
-// When integrating with the separate checkout containing verified RBAC:
-// 1. Mount the verified authentication middleware on the search router:
-//    router.use(verifyAuthToken);
-// 2. The middleware must populate `req.user = { id, role, assignedDocuments, ... }`.
-// 3. `extractActor(req)` below automatically uses `req.user` as the authoritative source
-//    and ignores client-supplied headers.
-// =========================================================================
+const { authenticate, requireRole } = require('../middleware/auth');
 
 /**
- * Extracts actor credentials from verified authentication context.
- * Prioritizes backend-verified `req.user` populated by auth middleware.
- * In production, never trusts unverified client headers.
- * In development/test mode, allows simulated role headers for testing only when req.user is absent.
+ * Require authentication on all semantic search routes.
+ * Derives the actor exclusively from authenticated req.user.
+ * Client-supplied headers, query parameters, or body properties are NEVER trusted.
  */
-function extractActor(req) {
-  // 1. Authoritative: Use verified session/token user populated by backend auth middleware
-  if (req.user) {
-    return {
-      userId: req.user.id || req.user._id || req.user.userId || null,
-      role: req.user.role || 'user',
-      isVerified: true,
-      assignedDocuments: req.user.assignedDocuments || []
-    };
-  }
-
-  // Check if req.actor was already set by upstream verified middleware
-  if (req.actor && req.actor.isVerified) {
-    return req.actor;
-  }
-
-  // 2. Unauthenticated / development simulation handling
-  const isProduction = process.env.NODE_ENV === 'production';
-  const clientUserId = req.headers['x-user-id'] || req.query?.userId || null;
-  const clientRole = req.headers['x-user-role'] || req.query?.role || null;
-
-  if (isProduction) {
-    // In production, NEVER trust client-supplied headers without verified auth
-    return {
-      userId: null,
-      role: 'user',
-      isVerified: false,
-      assignedDocuments: []
-    };
-  }
-
-  // In test/development environment without auth middleware installed:
-  // Allow simulation for UI testing, but flag as unverified
-  return {
-    userId: clientUserId,
-    role: clientRole || 'user',
-    isVerified: false,
-    assignedDocuments: []
-  };
-}
-
-/**
- * Middleware: Restricts administrative indexing endpoints to authorized reviewer roles
- * (Revenue Officer, Admin, Inspector).
- */
-function requireReviewerAuth(req, res, next) {
-  const actor = extractActor(req);
-
-  // If in production without verified authentication, reject immediately
-  if (process.env.NODE_ENV === 'production' && !actor.isVerified) {
-    return res.status(401).json({
-      error: 'Authentication required: Verified reviewer or administrator credentials required.'
-    });
-  }
-
-  if (actor.role !== 'officer' && actor.role !== 'admin' && actor.role !== 'inspector') {
-    return res.status(403).json({
-      error: 'Access denied: Indexing operations are restricted to authorized reviewers or administrators.'
-    });
-  }
-  req.actor = actor;
-  next();
-}
+router.use(authenticate);
 
 /**
  * POST /api/search/semantic
@@ -98,12 +26,11 @@ function requireReviewerAuth(req, res, next) {
 router.post('/semantic', async (req, res) => {
   try {
     const { query, limit = 10 } = req.body || {};
-    const actor = extractActor(req);
 
     const searchOutput = await searchSemantic({
       query,
       limit,
-      actor
+      actor: req.user
     });
 
     return res.json(searchOutput);
@@ -122,9 +49,9 @@ router.post('/semantic', async (req, res) => {
 /**
  * POST /api/search/index/:id
  * Indexes or updates the vector embedding for a specific document.
- * Restricts access to authorized reviewer roles.
+ * Strictly restricted to Admins.
  */
-router.post('/index/:id', requireReviewerAuth, async (req, res) => {
+router.post('/index/:id', requireRole('Admin'), async (req, res) => {
   const { id } = req.params;
 
   if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -160,9 +87,9 @@ router.post('/index/:id', requireReviewerAuth, async (req, res) => {
 /**
  * POST /api/search/backfill
  * Re-indexes all existing documents in the database.
- * Restricts access to authorized reviewer roles.
+ * Strictly restricted to Admins.
  */
-router.post('/backfill', requireReviewerAuth, async (req, res) => {
+router.post('/backfill', requireRole('Admin'), async (req, res) => {
   try {
     const force = req.body?.force === true;
     const summary = await backfillAllDocuments({ force });
@@ -183,6 +110,7 @@ router.post('/backfill', requireReviewerAuth, async (req, res) => {
 /**
  * GET /api/search/status
  * Reports semantic search index statistics and model status.
+ * Protected by authentication.
  */
 router.get('/status', async (req, res) => {
   try {

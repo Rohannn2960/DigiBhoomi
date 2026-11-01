@@ -21,6 +21,7 @@ import {
   fetchSearchIndexStatus,
   triggerBackfillIndex
 } from '../services/searchApi';
+import { useAuth } from '../context/auth-context';
 
 const SUGGESTED_QUERIES = [
   'Find land records belonging to Ramesh in Rangareddy',
@@ -41,9 +42,7 @@ export default function SemanticSearchPage() {
   const [isBackfilling, setIsBackfilling] = useState(false);
   const [backfillMessage, setBackfillMessage] = useState(null);
 
-  // Role simulation state (for testing reviewer vs public authorization)
-  const [simulatedRole, setSimulatedRole] = useState('officer');
-  const [simulatedUserId, setSimulatedUserId] = useState('');
+  const { user } = useAuth();
 
   const loadIndexStatus = async () => {
     try {
@@ -72,9 +71,7 @@ export default function SemanticSearchPage() {
     try {
       const data = await searchSemanticRecords({
         query: q,
-        limit: 10,
-        role: simulatedRole,
-        userId: simulatedUserId.trim() || null
+        limit: 10
       });
 
       setResults(data.results || []);
@@ -103,9 +100,7 @@ export default function SemanticSearchPage() {
     setBackfillMessage(null);
     try {
       const res = await triggerBackfillIndex({
-        force: false,
-        role: simulatedRole,
-        userId: simulatedUserId.trim() || null
+        force: false
       });
       const s = res.summary || {};
       setBackfillMessage(`Backfill complete: ${s.indexedCount || 0} indexed, ${s.skippedUnchangedCount || 0} unchanged, ${s.failedCount || 0} failed, ${s.totalDocuments || 0} total.`);
@@ -182,7 +177,7 @@ export default function SemanticSearchPage() {
             )}
           </div>
 
-          {(simulatedRole === 'officer' || simulatedRole === 'admin') && (
+          {user?.role === 'Admin' && (
             <button
               onClick={handleBackfill}
               disabled={isBackfilling}
@@ -197,7 +192,7 @@ export default function SemanticSearchPage() {
         </div>
       </div>
 
-      {/* Role & Access Simulator Toolbar */}
+      {/* Authenticated Identity & Permissions Info */}
       <div
         style={{
           background: '#f8fafc',
@@ -215,35 +210,21 @@ export default function SemanticSearchPage() {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <ShieldCheck size={16} style={{ color: 'var(--primary)' }} />
-          <span style={{ fontWeight: 500, color: 'var(--text-main)' }}>Actor Role:</span>
-          <select
-            value={simulatedRole}
-            onChange={(e) => setSimulatedRole(e.target.value)}
-            className="field-input"
-            style={{ padding: '0.25rem 0.6rem', fontSize: '0.82rem', width: 'auto' }}
-          >
-            <option value="officer">Revenue Officer (Reviewer - Full Access)</option>
-            <option value="admin">District Administrator (Full Access)</option>
-            <option value="user">Citizen / Public User (Restricted to Public & Owned)</option>
-          </select>
+          <span style={{ fontWeight: 500, color: 'var(--text-main)' }}>Authenticated as:</span>
+          <span style={{ fontWeight: 600, color: 'var(--primary)' }}>
+            {user?.displayName || 'User'}
+          </span>
+          <span style={{ fontSize: '0.75rem', background: '#e0e7ff', color: '#3730a3', padding: '2px 8px', borderRadius: '4px', fontWeight: 600 }}>
+            {user?.role || 'Citizen'}
+          </span>
         </div>
 
-        {simulatedRole === 'user' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ color: 'var(--text-muted)' }}>Simulated User ID:</span>
-            <input
-              type="text"
-              placeholder="e.g. user-123 (leave empty for public)"
-              value={simulatedUserId}
-              onChange={(e) => setSimulatedUserId(e.target.value)}
-              className="field-input"
-              style={{ padding: '0.25rem 0.6rem', fontSize: '0.82rem', width: '220px' }}
-            />
-          </div>
-        )}
-
         <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>
-          * Private documents are protected against unauthorized access.
+          {user?.role === 'Admin'
+            ? 'Administrator: Full global visibility across all land records.'
+            : user?.role === 'Officer'
+              ? 'Revenue Officer: Authorized to search assigned land records.'
+              : 'Citizen: Authorized to search your own land records.'}
         </div>
       </div>
 

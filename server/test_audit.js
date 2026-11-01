@@ -1,10 +1,9 @@
-const express = require('express');
 const mongoose = require('mongoose');
 const assert = require('assert');
 const path = require('path');
-const http = require('http');
+const { TEST_API_BASE_URL, TEST_MONGODB_URI } = require('./test_helpers/config');
+const { createTestIdentity, cleanupTestIdentities, makeAuthenticatedFetch } = require('./test_helpers/auth');
 
-const documentRoutes = require('./routes/documents');
 const Document = require('./models/Document');
 const AuditEvent = require('./models/AuditEvent');
 const {
@@ -14,11 +13,9 @@ const {
   recordAuditEvent
 } = require('./audit');
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/digibhoomi';
-const TEST_PORT = 5056;
-
 const createdDocIds = [];
 const createdAuditIds = [];
+const testIdentities = [];
 
 async function cleanup() {
   if (createdDocIds.length > 0) {
@@ -27,6 +24,7 @@ async function cleanup() {
   if (createdAuditIds.length > 0) {
     await AuditEvent.deleteMany({ _id: { $in: createdAuditIds } }, { allowTestCleanup: true });
   }
+  await cleanupTestIdentities(testIdentities);
 }
 
 async function runAuditTests() {
@@ -34,16 +32,21 @@ async function runAuditTests() {
   console.log('   DigiBhoomi Phase 4 Audit History & Trail Tests');
   console.log('====================================================\n');
 
-  await mongoose.connect(MONGODB_URI);
+  await mongoose.connect(TEST_MONGODB_URI);
+  const baseUrl = `${TEST_API_BASE_URL}/documents`;
 
-  // Set up Express test instance
-  const app = express();
-  app.use(express.json());
-  app.use('/api/documents', documentRoutes);
+  // Create real test users
+  const aliceIdentity = await createTestIdentity('Citizen');
+  testIdentities.push(aliceIdentity);
+  const aliceFetch = makeAuthenticatedFetch(aliceIdentity.cookie);
 
-  const server = http.createServer(app);
-  await new Promise((resolve) => server.listen(TEST_PORT, resolve));
-  const baseUrl = `http://localhost:${TEST_PORT}/api/documents`;
+  const bobOfficerIdentity = await createTestIdentity('Officer');
+  testIdentities.push(bobOfficerIdentity);
+  const bobFetch = makeAuthenticatedFetch(bobOfficerIdentity.cookie);
+
+  const charlieIdentity = await createTestIdentity('Citizen');
+  testIdentities.push(charlieIdentity);
+  const charlieFetch = makeAuthenticatedFetch(charlieIdentity.cookie);
 
   try {
     // ----------------------------------------------------
@@ -107,26 +110,26 @@ async function runAuditTests() {
     // TEST 3: Actor Identity Extraction & Untrusted Input Rejection
     // ----------------------------------------------------
     console.log('[TEST 3] Verifying actor identity extraction and missing actor fallback...');
-    // Case A: Missing headers -> ANONYMOUS
+    // Case A: Missing user -> ANONYMOUS
     const anonymousActor = extractActor({ headers: {} });
     assert.strictEqual(anonymousActor.id, null);
     assert.strictEqual(anonymousActor.role, null);
     assert.strictEqual(anonymousActor.type, 'ANONYMOUS');
 
-    // Case B: Authenticated Officer
+    // Case B: Authenticated Officer in req.user
     const officerActor = extractActor({
-      headers: { 'x-user-id': 'officer-99', 'x-user-role': 'officer' }
+      user: { _id: bobOfficerIdentity.user._id, role: 'Officer' }
     });
-    assert.strictEqual(officerActor.id, 'officer-99');
-    assert.strictEqual(officerActor.role, 'officer');
+    assert.strictEqual(String(officerActor.id), String(bobOfficerIdentity.user._id));
+    assert.strictEqual(officerActor.role, 'Officer');
     assert.strictEqual(officerActor.type, 'OFFICER');
 
-    // Case C: Authenticated User
+    // Case C: Authenticated Citizen in req.user
     const userActor = extractActor({
-      headers: { 'x-user-id': 'user-123', 'x-user-role': 'user' }
+      user: { _id: aliceIdentity.user._id, role: 'Citizen' }
     });
-    assert.strictEqual(userActor.id, 'user-123');
-    assert.strictEqual(userActor.role, 'user');
+    assert.strictEqual(String(userActor.id), String(aliceIdentity.user._id));
+    assert.strictEqual(userActor.role, 'Citizen');
     assert.strictEqual(userActor.type, 'USER');
 
     console.log('  ✓ Actor identity verified server-side with reliable fallback.\n');
@@ -136,6 +139,8 @@ async function runAuditTests() {
     // ----------------------------------------------------
     console.log('[TEST 4] Creating document and testing upload audit event...');
     const testDoc = new Document({
+      ownerId: aliceIdentity.user._id,
+      assignedOfficerId: bobOfficerIdentity.user._id,
       fileMetadata: {
         originalFilename: 'Audit_Test_Document.pdf',
         storedFilename: 'test_audit_doc.pdf',
@@ -145,7 +150,7 @@ async function runAuditTests() {
         storagePath: 'C:\\Users\\rohan\\DigiBhoomi\\server\\uploads\\test_audit_doc.pdf'
       },
       accessControl: {
-        uploadedBy: 'user-alice',
+        uploadedBy: aliceIdentity.user._id.toString(),
         isPrivate: true
       },
       status: 'Uploaded',
@@ -162,7 +167,7 @@ async function runAuditTests() {
     const uploadEvt = await recordAuditEvent({
       documentId: testDoc._id,
       action: 'DOCUMENT_UPLOADED',
-      actor: { id: 'user-alice', role: 'user', type: 'USER' },
+      actor: { id: aliceIdentity.user._id.toString(), role: 'Citizen', type: 'USER' },
       description: `Document '${testDoc.fileMetadata.originalFilename}' uploaded.`,
       details: {
         filename: testDoc.fileMetadata.originalFilename,
@@ -181,12 +186,10 @@ async function runAuditTests() {
     // TEST 5: Field Edits & Status Transitions via PATCH /api/documents/:id
     // ----------------------------------------------------
     console.log('[TEST 5] Testing field edits and review decisions with diff logging via PATCH...');
-    const patchRes = await fetch(`${baseUrl}/${testDoc._id}`, {
+    const patchRes = await bobFetch(`${baseUrl}/${testDoc._id}`, {
       method: 'PATCH',
       headers: {
-        'Content-Type': 'application/json',
-        'x-user-id': 'officer-bob',
-        'x-user-role': 'officer'
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         landDetails: {
@@ -198,7 +201,7 @@ async function runAuditTests() {
       })
     });
 
-    assert.strictEqual(patchRes.status, 200, 'PATCH should succeed for authorized officer');
+    assert.strictEqual(patchRes.status, 200, 'PATCH should succeed for authorized assigned officer');
     const updatedDocData = await patchRes.json();
     assert.strictEqual(updatedDocData.landDetails.ownerName.value, 'Suresh Kumar Sharma');
 
@@ -211,34 +214,47 @@ async function runAuditTests() {
     const latestEditEvt = fieldEditEvents[fieldEditEvents.length - 1];
     createdAuditIds.push(latestEditEvt._id);
 
-    assert.strictEqual(latestEditEvt.actor.id, 'officer-bob');
-    assert.strictEqual(latestEditEvt.actor.role, 'officer');
+    assert.strictEqual(String(latestEditEvt.actor.id), String(bobOfficerIdentity.user._id));
+    assert.strictEqual(latestEditEvt.actor.role, 'Officer');
     assert.strictEqual(latestEditEvt.actor.type, 'OFFICER');
     assert.ok(latestEditEvt.details.diffs.length >= 2, 'Should capture both modified fields');
 
-    // Test Status Transition to 'Verified'
-    const statusRes = await fetch(`${baseUrl}/${testDoc._id}`, {
+    // Verify generic PATCH cannot set final status to 'Verified'
+    const invalidPatchRes = await bobFetch(`${baseUrl}/${testDoc._id}`, {
       method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-user-id': 'officer-bob',
-        'x-user-role': 'officer'
-      },
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'Verified' })
+    });
+    assert.strictEqual(invalidPatchRes.status, 400, 'Generic PATCH must reject Verified status with 400');
+
+    // Perform formal review decision via dedicated PATCH /:id/review endpoint
+    const reviewRes = await bobFetch(`${baseUrl}/${testDoc._id}/review`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        status: 'Verified'
+        action: 'approve',
+        remarks: 'Land record verified against official register'
       })
     });
-    assert.strictEqual(statusRes.status, 200);
+    assert.strictEqual(reviewRes.status, 200);
+    const approvedDoc = await reviewRes.json();
+    assert.strictEqual(approvedDoc.status, 'Verified');
 
     const statusEvents = await AuditEvent.find({
       documentId: testDoc._id,
       action: 'STATUS_UPDATED'
     }).sort({ timestamp: 1 });
-    assert.strictEqual(statusEvents.length, 2, 'Should have 2 status transition events');
+    assert.strictEqual(statusEvents.length, 1, 'Should have 1 status transition event from PATCH');
     statusEvents.forEach(e => createdAuditIds.push(e._id));
     assert.strictEqual(statusEvents[0].details.newStatus, 'Needs review');
-    assert.strictEqual(statusEvents[1].details.newStatus, 'Verified');
-    console.log('  ✓ Field edits with diffs and review status transitions successfully audited.\n');
+
+    const approvalEvents = await AuditEvent.find({
+      documentId: testDoc._id,
+      action: 'DOCUMENT_APPROVED'
+    });
+    assert.strictEqual(approvalEvents.length, 1, 'Should have 1 DOCUMENT_APPROVED event from review endpoint');
+    approvalEvents.forEach(e => createdAuditIds.push(e._id));
+    console.log('  ✓ Field edits with diffs and formal review decisions successfully audited.\n');
 
     // ----------------------------------------------------
     // TEST 6: Failed Operations Logging
@@ -267,13 +283,8 @@ async function runAuditTests() {
     // ----------------------------------------------------
     console.log('[TEST 7] Testing GET /api/documents/:id/audit chronological order & pagination...');
 
-    // Fetch in chronological order (asc)
-    const ascRes = await fetch(`${baseUrl}/${testDoc._id}/audit?sort=asc`, {
-      headers: {
-        'x-user-id': 'user-alice',
-        'x-user-role': 'user'
-      }
-    });
+    // Fetch in chronological order (asc) by owner Alice
+    const ascRes = await aliceFetch(`${baseUrl}/${testDoc._id}/audit?sort=asc`);
     assert.strictEqual(ascRes.status, 200);
     const ascData = await ascRes.json();
 
@@ -286,12 +297,7 @@ async function runAuditTests() {
     }
 
     // Fetch with pagination
-    const pagedRes = await fetch(`${baseUrl}/${testDoc._id}/audit?page=1&limit=2&sort=asc`, {
-      headers: {
-        'x-user-id': 'user-alice',
-        'x-user-role': 'user'
-      }
-    });
+    const pagedRes = await aliceFetch(`${baseUrl}/${testDoc._id}/audit?page=1&limit=2&sort=asc`);
     assert.strictEqual(pagedRes.status, 200);
     const pagedData = await pagedRes.json();
     assert.strictEqual(pagedData.events.length, 2, 'Should paginate to limit=2');
@@ -306,27 +312,17 @@ async function runAuditTests() {
     // ----------------------------------------------------
     console.log('[TEST 8] Testing authorization protection for private document audit history...');
 
-    // Case A: Unauthorized other user (user-charlie) -> 403 Forbidden
-    const unauthRes = await fetch(`${baseUrl}/${testDoc._id}/audit`, {
-      headers: {
-        'x-user-id': 'user-charlie',
-        'x-user-role': 'user'
-      }
-    });
-    assert.strictEqual(unauthRes.status, 403, 'Unauthorized user should be denied access (403)');
+    // Case A: Unauthorized other citizen (Charlie) -> 404 Not Found
+    const unauthRes = await charlieFetch(`${baseUrl}/${testDoc._id}/audit`);
+    assert.strictEqual(unauthRes.status, 404, 'Unauthorized user should be denied access (404 Not Found)');
 
-    // Case B: Anonymous unauthenticated user on private document -> 403 Forbidden
+    // Case B: Anonymous unauthenticated user -> 401 Unauthorized
     const anonRes = await fetch(`${baseUrl}/${testDoc._id}/audit`);
-    assert.strictEqual(anonRes.status, 403, 'Unauthenticated user on private doc should be denied (403)');
+    assert.strictEqual(anonRes.status, 401, 'Unauthenticated user should be denied (401)');
 
-    // Case C: Reviewer Officer role -> 200 OK
-    const officerRes = await fetch(`${baseUrl}/${testDoc._id}/audit`, {
-      headers: {
-        'x-user-id': 'officer-bob',
-        'x-user-role': 'officer'
-      }
-    });
-    assert.strictEqual(officerRes.status, 200, 'Officer should have authorized access');
+    // Case C: Assigned Reviewer Officer -> 200 OK
+    const officerRes = await bobFetch(`${baseUrl}/${testDoc._id}/audit`);
+    assert.strictEqual(officerRes.status, 200, 'Assigned Officer should have authorized access');
 
     console.log('  ✓ Authorization properly restricts access to private audit history.\n');
 
@@ -363,7 +359,6 @@ async function runAuditTests() {
 
   } finally {
     await cleanup();
-    await new Promise((resolve) => server.close(resolve));
     await mongoose.disconnect();
   }
 }

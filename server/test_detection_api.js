@@ -1,22 +1,19 @@
-const express = require('express');
 const mongoose = require('mongoose');
 const assert = require('assert');
 const path = require('path');
-const fs = require('fs');
-const http = require('http');
+const { TEST_API_BASE_URL, TEST_MONGODB_URI } = require('./test_helpers/config');
+const { createTestIdentity, cleanupTestIdentities, makeAuthenticatedFetch } = require('./test_helpers/auth');
 
-const documentRoutes = require('./routes/documents');
 const Document = require('./models/Document');
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/digibhoomi';
-const TEST_PORT = 5055;
-
 const createdDocIds = [];
+const testIdentities = [];
 
 async function cleanup() {
   if (createdDocIds.length > 0) {
     await Document.deleteMany({ _id: { $in: createdDocIds } });
   }
+  await cleanupTestIdentities(testIdentities);
 }
 
 async function runApiTests() {
@@ -24,20 +21,25 @@ async function runApiTests() {
   console.log('   DigiBhoomi Phase 4 API & Authorization Tests');
   console.log('====================================================\n');
 
-  await mongoose.connect(MONGODB_URI);
+  await mongoose.connect(TEST_MONGODB_URI);
+  const baseUrl = `${TEST_API_BASE_URL}/documents`;
 
-  // Set up Express test app
-  const app = express();
-  app.use(express.json());
-  app.use('/api/documents', documentRoutes);
+  const aliceIdentity = await createTestIdentity('Citizen');
+  testIdentities.push(aliceIdentity);
+  const aliceFetch = makeAuthenticatedFetch(aliceIdentity.cookie);
 
-  const server = http.createServer(app);
-  await new Promise((resolve) => server.listen(TEST_PORT, resolve));
-  const baseUrl = `http://localhost:${TEST_PORT}/api/documents`;
+  const bobIdentity = await createTestIdentity('Citizen');
+  testIdentities.push(bobIdentity);
+  const bobFetch = makeAuthenticatedFetch(bobIdentity.cookie);
+
+  const officerIdentity = await createTestIdentity('Officer');
+  testIdentities.push(officerIdentity);
+  const officerFetch = makeAuthenticatedFetch(officerIdentity.cookie);
 
   try {
-    // 1. Create Base Document (Doc A)
+    // 1. Create Base Document (Doc A) owned by Alice
     const docA = new Document({
+      ownerId: aliceIdentity.user._id,
       fileMetadata: {
         originalFilename: 'Base_Record_142.pdf',
         storedFilename: 'test_base_142.pdf',
@@ -68,6 +70,7 @@ async function runApiTests() {
 
     // 2. Create Conflicting Document (Doc B: Same parcel 142/2 in Khaspur, different owner "Shyam Lal" and area "2.1000")
     const docB = new Document({
+      ownerId: aliceIdentity.user._id,
       fileMetadata: {
         originalFilename: 'Conflicting_Mutation_142.pdf',
         storedFilename: 'test_conf_142.pdf',
@@ -92,6 +95,7 @@ async function runApiTests() {
 
     // 3. Create Duplicate Candidate Document (Doc C: Exact land parcel and owner match)
     const docC = new Document({
+      ownerId: aliceIdentity.user._id,
       fileMetadata: {
         originalFilename: 'Duplicate_Upload_142.pdf',
         storedFilename: 'test_dup_142.pdf',
@@ -113,8 +117,10 @@ async function runApiTests() {
     await docC.save();
     createdDocIds.push(docC._id);
 
-    // 4. Create Private Document owned by 'user-bob'
+    // 4. Create Private Document owned by Bob and assigned to Officer
     const docPrivate = new Document({
+      ownerId: bobIdentity.user._id,
+      assignedOfficerId: officerIdentity.user._id,
       fileMetadata: {
         originalFilename: 'Bob_Private_Record.pdf',
         storedFilename: 'bob_private.pdf',
@@ -125,7 +131,7 @@ async function runApiTests() {
       },
       status: 'Needs review',
       accessControl: {
-        uploadedBy: 'user-bob',
+        uploadedBy: bobIdentity.user._id.toString(),
         isPrivate: true
       },
       landDetails: {
@@ -139,7 +145,7 @@ async function runApiTests() {
     createdDocIds.push(docPrivate._id);
 
     console.log('Test 1: GET /api/documents/:id/conflicts returns duplicate and conflict analysis');
-    const getRes = await fetch(`${baseUrl}/${docA._id}/conflicts?refresh=true`);
+    const getRes = await aliceFetch(`${baseUrl}/${docA._id}/conflicts?refresh=true`);
     assert.strictEqual(getRes.status, 200, `Expected 200, got ${getRes.status}`);
     const getData = await getRes.json();
 
@@ -152,7 +158,7 @@ async function runApiTests() {
     console.log('  ✓ Pass: GET /api/documents/:id/conflicts accurately detects duplicates and conflicts.\n');
 
     console.log('Test 2: POST /api/documents/:id/conflicts/analyze triggers re-analysis and persists in DB');
-    const postRes = await fetch(`${baseUrl}/${docA._id}/conflicts/analyze`, { method: 'POST' });
+    const postRes = await aliceFetch(`${baseUrl}/${docA._id}/conflicts/analyze`, { method: 'POST' });
     assert.strictEqual(postRes.status, 200);
     const postData = await postRes.json();
     assert.strictEqual(postData.duplicateDetection.hasPotentialDuplicates, true);
@@ -166,27 +172,21 @@ async function runApiTests() {
     console.log('  ✓ Pass: Analysis persists to MongoDB without altering extraction validation score.\n');
 
     console.log('Test 3: Authorization Check — Unauthorized user cannot access other user private documents');
-    const unauthRes = await fetch(`${baseUrl}/${docPrivate._id}/conflicts`, {
-      headers: { 'x-user-id': 'user-alice' } // alice requesting bob's private doc
-    });
-    assert.strictEqual(unauthRes.status, 403, `Expected 403 Forbidden, got ${unauthRes.status}`);
+    const unauthRes = await aliceFetch(`${baseUrl}/${docPrivate._id}/conflicts`);
+    assert.strictEqual(unauthRes.status, 404, `Expected 404 Not Found, got ${unauthRes.status}`);
     const unauthData = await unauthRes.json();
-    assert(unauthData.error.includes('Access denied'), 'Error message should indicate access denied');
-    console.log('  ✓ Pass: HTTP 403 Forbidden returned for unauthorized document access.\n');
+    assert(unauthData.error.includes('Document not found'), 'Error message should indicate document not found');
+    console.log('  ✓ Pass: HTTP 404 Not Found returned for unauthorized document access.\n');
 
     console.log('Test 4: Authorization Check — Authorized owner can access private document');
-    const authRes = await fetch(`${baseUrl}/${docPrivate._id}/conflicts`, {
-      headers: { 'x-user-id': 'user-bob' } // bob requesting his own doc
-    });
+    const authRes = await bobFetch(`${baseUrl}/${docPrivate._id}/conflicts`);
     assert.strictEqual(authRes.status, 200, `Expected 200 OK, got ${authRes.status}`);
     console.log('  ✓ Pass: Document owner can access private document.\n');
 
-    console.log('Test 5: Authorization Check — Officer reviewer has access');
-    const officerRes = await fetch(`${baseUrl}/${docPrivate._id}/conflicts`, {
-      headers: { 'x-user-role': 'officer' } // officer role
-    });
+    console.log('Test 5: Authorization Check — Assigned officer reviewer has access');
+    const officerRes = await officerFetch(`${baseUrl}/${docPrivate._id}/conflicts`);
     assert.strictEqual(officerRes.status, 200, `Expected 200 OK, got ${officerRes.status}`);
-    console.log('  ✓ Pass: Revenue Officer reviewer role has access.\n');
+    console.log('  ✓ Pass: Assigned Revenue Officer reviewer role has access.\n');
 
     console.log('Test 6: Internal server paths and credentials are NOT leaked in response');
     const jsonStr = JSON.stringify(getData);
@@ -200,7 +200,6 @@ async function runApiTests() {
     console.log('====================================================\n');
   } finally {
     await cleanup();
-    server.close();
     await mongoose.disconnect();
   }
 }

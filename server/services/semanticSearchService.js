@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Document = require('../models/Document');
 const SemanticEmbedding = require('../models/SemanticEmbedding');
+const { hasDocumentAccess } = require('../middleware/auth');
 
 const CURRENT_EMBEDDING_MODEL = 'Xenova/multilingual-e5-base';
 const CURRENT_EMBEDDING_DIMENSIONS = 768;
@@ -187,73 +188,30 @@ async function generateEmbedding(text, optionsOrType = 'passage') {
 
 /**
  * Authoritative RBAC and access control checker.
- * Evaluates live document access against verified actor identity.
+/**
+ * Evaluates live document access against verified actor identity using authoritative RBAC.
  *
  * Rules:
  * - Admin: Full global visibility across all documents.
- * - Officer / Inspector:
- *   - If document specifies assignedOfficer/assignedTo: only permitted if officer matches.
- *   - If officer specifies assignedDocuments whitelist: document must be in whitelist.
- *   - Otherwise: general jurisdiction reviewer access.
- * - Citizen / Public User:
- *   - Public documents: Allowed.
- *   - Private documents: ONLY permitted if actor.userId === uploadedBy.
- *   - Unauthenticated: CANNOT view private documents.
- *   - Citizens can NEVER view or discover another citizen's private documents.
+ * - Officer: Documents where assignedOfficerId matches actor identity.
+ * - Citizen: Documents where ownerId matches actor identity.
  */
-function checkDocumentAccess(actor, accessControl, document = null) {
-  const { userId, role, assignedDocuments } = actor || {};
-  const effectiveRole = (role || 'user').toLowerCase();
+function checkDocumentAccess(actor, document = null, legacyDoc = null) {
+  const targetDoc = document || legacyDoc;
+  if (!targetDoc) return false;
 
-  // 1. Admin role has unrestricted global access
-  if (effectiveRole === 'admin') {
-    return true;
+  // When actor is specified with role or ID, enforce strict backend RBAC:
+  if (actor && (actor.role || actor.userId || actor._id)) {
+    return hasDocumentAccess(targetDoc, actor);
   }
 
-  // Authoritative permissions source: prefer live document state over embedding snapshot
-  const effectiveAC = document?.accessControl || accessControl || {};
-  const uploadedBy = effectiveAC.uploadedBy ? String(effectiveAC.uploadedBy) : null;
-  const isPrivate = Boolean(effectiveAC.isPrivate);
-
-  // 2. Officer / Inspector RBAC
-  if (effectiveRole === 'officer' || effectiveRole === 'inspector') {
-    const docIdStr = (document?._id || document?.id)?.toString();
-
-    // If officer has an explicit whitelist of assigned documents
-    if (Array.isArray(assignedDocuments)) {
-      return Boolean(docIdStr && assignedDocuments.map(String).includes(docIdStr));
-    }
-
-    // If document is assigned to a specific officer
-    const assignedOfficer = document?.assignedOfficer || document?.assignedTo || effectiveAC.assignedOfficer || effectiveAC.assignedTo;
-    if (assignedOfficer) {
-      const assignedOfficerStr = String(assignedOfficer);
-      if (!userId || assignedOfficerStr !== String(userId)) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  // 3. Citizen / Public User RBAC
-  if (isPrivate) {
-    // Unauthenticated users cannot view private records
-    if (!userId) {
-      return false;
-    }
-    // Authenticated citizens can only view documents they uploaded/own
-    if (uploadedBy && uploadedBy !== String(userId)) {
-      return false;
-    }
-    // Private record with no designated owner is denied to regular citizens
-    if (!uploadedBy) {
-      return false;
-    }
-  } else if (uploadedBy && isPrivate && !userId) {
+  // When actor is completely omitted (e.g. standalone test queries for cross-lingual NLP),
+  // private or owned documents MUST NOT be accessible without credentials:
+  if (targetDoc.ownerId || targetDoc.accessControl?.isPrivate || targetDoc.accessControl?.uploadedBy) {
     return false;
   }
 
+  // Unowned public documents in automated tests
   return true;
 }
 
@@ -676,7 +634,7 @@ async function searchSemantic({ query, limit = 10, actor = {} }) {
   const allEmbeddings = await SemanticEmbedding.find({
     model: CURRENT_EMBEDDING_MODEL,
     dimensions: CURRENT_EMBEDDING_DIMENSIONS
-  }).populate('documentId', '_id status accessControl fileMetadata landDetails assignedOfficer assignedTo');
+  }).populate('documentId', '_id status accessControl fileMetadata landDetails ownerId assignedOfficerId assignedOfficer assignedTo');
 
   // Evaluate candidate results with authoritative authorization filtering
   const scoredCandidates = [];
@@ -694,7 +652,7 @@ async function searchSemantic({ query, limit = 10, actor = {} }) {
     }
 
     // 3. Authoritative RBAC check on live Document state (never rely solely on stale snapshot)
-    const isAllowed = checkDocumentAccess(actor, actualDoc.accessControl, actualDoc);
+    const isAllowed = checkDocumentAccess(actor, actualDoc);
     if (!isAllowed) {
       // NEVER leak private document information, scores, or explanations to unauthorized users
       continue;
@@ -717,12 +675,17 @@ async function searchSemantic({ query, limit = 10, actor = {} }) {
   // Take top bounded results
   const topResults = scoredCandidates.slice(0, boundedLimit);
 
-  // Map to clean, sanitized public response (strictly never expose raw vectors, storagePath, or private paths)
+  // Map to clean, sanitized response (strictly never expose raw vectors, storagePath, or private paths)
   const results = topResults.map(item => {
     const { record, actualDoc, relevanceScore } = item;
+    const liveLandDetails = extractFieldSnippets(actualDoc);
+    const effectiveLandDetails = Object.values(liveLandDetails).some(v => Boolean(v))
+      ? liveLandDetails
+      : (record.fieldSnippets || {});
+
     const matchAnalysis = generateMatchExplanation(
       trimmedQuery,
-      record.fieldSnippets || {},
+      effectiveLandDetails,
       relevanceScore
     );
 
@@ -733,15 +696,13 @@ async function searchSemantic({ query, limit = 10, actor = {} }) {
       relevanceScore: parseFloat(relevanceScore.toFixed(4)),
       matchExplanation: matchAnalysis.explanation,
       matchedFields: matchAnalysis.matchedFields,
-      landDetails: record.fieldSnippets || {},
+      landDetails: effectiveLandDetails,
       indexedAt: record.indexedAt
     };
   });
 
-  // Result counts: for restricted actors (citizens), totalIndexed reflects accessible records
-  const totalAccessible = (actor.role === 'admin' || actor.role === 'officer' || actor.role === 'inspector')
-    ? totalEntries
-    : scoredCandidates.length;
+  // Result counts: totalIndexed reflects strictly documents accessible to this authenticated actor
+  const totalAccessible = scoredCandidates.length;
 
   return {
     query: trimmedQuery,

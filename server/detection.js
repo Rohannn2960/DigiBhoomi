@@ -482,25 +482,48 @@ async function findCandidateDocuments(DocumentModel, sourceDoc, options = {}) {
   };
 
   // Authorization / Privacy scoping:
-  // If options.userId is passed and options.role !== 'admin' && options.role !== 'officer':
-  // Exclude private documents owned by other users
-  if (options.userId && options.role !== 'admin' && options.role !== 'officer') {
+  // Enforces strict RBAC: Admin (global), Officer (assigned only), Citizen (owned only)
+  const role = String(options.role || '').toLowerCase();
+  const userId = options.userId ? options.userId.toString() : null;
+  const mongoose = require('mongoose');
+  const userObjectId = userId && mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : null;
+
+  if (role === 'admin') {
+    // Admins retain appropriate global access across all records
+  } else if (role === 'officer') {
+    // Officers must only access records within their assignment permissions
+    if (userObjectId) {
+      query.$and = [
+        {
+          $or: [
+            { assignedOfficerId: userObjectId },
+            { assignedOfficer: userId },
+            { assignedTo: userId }
+          ]
+        }
+      ];
+    }
+  } else if (role === 'citizen' || (userId && role !== 'admin' && role !== 'officer')) {
+    // Citizens must only see their own records (cannot access another Citizen's records)
+    const userMatch = userObjectId
+      ? [{ ownerId: userObjectId }, { 'accessControl.uploadedBy': userId }]
+      : [{ 'accessControl.uploadedBy': userId }];
     query.$and = [
       {
-        $or: [
-          { 'accessControl.isPrivate': { $ne: true } },
-          { 'accessControl.uploadedBy': options.userId }
-        ]
+        $or: userMatch
       }
     ];
   } else if (!options.allowPrivateOfOthers) {
-    // By default, do not leak other users' private documents
-    if (options.userId) {
+    // By default for unauthenticated automated tests, exclude private documents
+    if (userId) {
+      const userMatch = userObjectId
+        ? [{ ownerId: userObjectId }, { 'accessControl.uploadedBy': userId }]
+        : [{ 'accessControl.uploadedBy': userId }];
       query.$and = [
         {
           $or: [
             { 'accessControl.isPrivate': { $ne: true } },
-            { 'accessControl.uploadedBy': options.userId }
+            ...userMatch
           ]
         }
       ];

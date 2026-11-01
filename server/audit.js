@@ -40,15 +40,23 @@ function sanitizeAuditDetails(obj) {
 }
 
 /**
- * Extracts actor context from verified server request headers.
- * Never accepts actor or timestamps from the client request body.
+ * Extracts actor context strictly from authenticated req.user or explicit trusted actor.
+ * Never derives identity from spoofable client headers (x-user-id, x-user-role) or body.
  */
 function extractActor(req, explicitActor = null) {
   if (explicitActor && typeof explicitActor === 'object') {
+    const role = explicitActor.role || null;
+    let actorType = explicitActor.type;
+    if (!actorType) {
+      if (role === 'Officer' || role === 'officer') actorType = 'OFFICER';
+      else if (role === 'Admin' || role === 'admin') actorType = 'ADMIN';
+      else if (role) actorType = 'USER';
+      else actorType = 'ANONYMOUS';
+    }
     return {
-      id: explicitActor.id || null,
-      role: explicitActor.role || null,
-      type: explicitActor.type || (explicitActor.role === 'officer' ? 'OFFICER' : explicitActor.role === 'admin' ? 'ADMIN' : 'USER')
+      id: explicitActor.id ? explicitActor.id.toString() : null,
+      role,
+      type: actorType
     };
   }
 
@@ -56,22 +64,22 @@ function extractActor(req, explicitActor = null) {
     return { id: null, role: null, type: 'SYSTEM' };
   }
 
-  const userId = req.headers?.['x-user-id'] || null;
-  const userRole = req.headers?.['x-user-role'] || null;
-
-  let actorType = 'ANONYMOUS';
-  if (userRole === 'officer') {
-    actorType = 'OFFICER';
-  } else if (userRole === 'admin') {
-    actorType = 'ADMIN';
-  } else if (userId) {
-    actorType = 'USER';
+  if (req.user) {
+    const role = req.user.role || null;
+    let actorType = 'USER';
+    if (role === 'Officer' || role === 'officer') actorType = 'OFFICER';
+    else if (role === 'Admin' || role === 'admin') actorType = 'ADMIN';
+    return {
+      id: req.user._id?.toString() || req.user.id || null,
+      role,
+      type: actorType
+    };
   }
 
   return {
-    id: userId,
-    role: userRole,
-    type: actorType
+    id: null,
+    role: null,
+    type: 'ANONYMOUS'
   };
 }
 
@@ -135,16 +143,22 @@ async function recordAuditEvent({
   errorMessage = null
 }) {
   try {
-    const actorInfo = extractActor(req, actor);
+    const mongoose = require('mongoose');
+    const actorInfo = actor || extractActor(req);
     const sanitizedDetails = sanitizeAuditDetails(details);
+    const actorId = req?.user?._id || (actorInfo?.id && mongoose.Types.ObjectId.isValid(actorInfo.id) ? actorInfo.id : null);
 
     const auditEntry = new AuditEvent({
-      documentId,
+      actorId,
       action,
+      resourceType: 'DOCUMENT',
+      resourceId: documentId ? documentId.toString() : null,
+      documentId,
       actor: actorInfo,
       timestamp: new Date(), // Strict server-side timestamp
       description,
       details: sanitizedDetails,
+      metadata: sanitizedDetails,
       outcome,
       errorMessage: errorMessage || null
     });

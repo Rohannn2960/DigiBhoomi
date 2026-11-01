@@ -19,6 +19,8 @@ build/
 # Server uploads & secrets
 server/uploads/*
 !server/uploads/.gitkeep
+server/uploads_rbac_test*/
+server/uploads_rbac_audit_test*/
 .env
 .env.*
 !.env.example

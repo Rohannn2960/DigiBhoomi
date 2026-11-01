@@ -2,14 +2,18 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+const { TEST_API_ORIGIN, TEST_MONGODB_URI } = require('./test_helpers/config');
+const { uploadDir } = require('./middleware/upload');
+const { installTestIdentity } = require('./test_helpers/auth');
 
-const BASE_URL = 'http://localhost:5000';
+const BASE_URL = TEST_API_ORIGIN;
 const PYTHON_URL = 'http://127.0.0.1:8000';
 const FIXTURES_DIR = path.resolve(__dirname, 'test_fixtures');
-const UPLOADS_DIR = path.resolve(__dirname, 'uploads');
+const UPLOADS_DIR = uploadDir;
 const EXPECTED_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 const createdDocumentIds = new Set();
 const createdStoredFilenames = new Set();
+let restoreTestIdentity = null;
 
 async function cleanupCreatedResources() {
   const Document = require('./models/Document');
@@ -49,9 +53,17 @@ async function runTests() {
   };
 
   try {
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/digibhoomi');
+    await mongoose.connect(TEST_MONGODB_URI);
   } catch {
     assert('MongoDB is available for acceptance testing', false, 'Connection failed.');
+    printSummary(results);
+    return;
+  }
+
+  try {
+    restoreTestIdentity = await installTestIdentity('Admin');
+  } catch (err) {
+    assert('Authenticated test identity is available', false, err.message);
     printSummary(results);
     return;
   }
@@ -417,6 +429,12 @@ runTests()
       await cleanupCreatedResources();
     } catch (err) {
       console.error('Acceptance cleanup failed:', err.message);
+      process.exitCode = 1;
+    }
+    try {
+      if (restoreTestIdentity) await restoreTestIdentity();
+    } catch (err) {
+      console.error('Test identity cleanup failed:', err.message);
       process.exitCode = 1;
     }
     try {

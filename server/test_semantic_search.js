@@ -470,6 +470,7 @@ async function runTests() {
       },
       status: 'Verified',
       accessControl: { uploadedBy: 'citizen-user-123', isPrivate: true },
+      assignedOfficer: 'officer-789',
       landDetails: {
         ownerName: { value: 'Secret Owner Rao' },
         village: { value: 'Confidential Village' },
@@ -502,12 +503,19 @@ async function runTests() {
     });
     assert(ownerSearch.results.some(r => r.documentId.toString() === docPrivate._id.toString()), 'Owner MUST have access to own private record');
 
-    // Authorized revenue officer
+    // Unassigned revenue officer cannot discover unassigned records
+    const unassignedOfficerSearch = await searchSemantic({
+      query: 'Secret Owner Rao Private Heritage',
+      actor: { userId: 'officer-unassigned-999', role: 'officer' }
+    });
+    assert(!unassignedOfficerSearch.results.some(r => r.documentId.toString() === docPrivate._id.toString()), 'Unassigned officer MUST NOT see record');
+
+    // Authorized assigned revenue officer
     const officerSearch = await searchSemantic({
       query: 'Secret Owner Rao Private Heritage',
       actor: { userId: 'officer-789', role: 'officer' }
     });
-    assert(officerSearch.results.some(r => r.documentId.toString() === docPrivate._id.toString()), 'Officer MUST have reviewer access');
+    assert(officerSearch.results.some(r => r.documentId.toString() === docPrivate._id.toString()), 'Assigned Officer MUST have access');
 
     // Response sanitization: Ensure no raw vectors or internal filesystem paths are returned
     const serialized = JSON.stringify(officerSearch);
