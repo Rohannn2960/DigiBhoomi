@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Layers, Upload, ListFilter, User } from 'lucide-react';
+import { Layers, Upload, ListFilter, User, Search } from 'lucide-react';
 
 export default function Navbar() {
   return (
@@ -16,8 +16,8 @@ export default function Navbar() {
       </NavLink>
 
       <div className="nav-links">
-        <NavLink 
-          to="/records" 
+        <NavLink
+          to="/records"
           className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
         >
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
@@ -25,8 +25,17 @@ export default function Navbar() {
           </span>
         </NavLink>
 
-        <NavLink 
-          to="/upload" 
+        <NavLink
+          to="/search"
+          className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <Search size={16} /> Semantic Search
+          </span>
+        </NavLink>
+
+        <NavLink
+          to="/upload"
           className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
         >
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
@@ -34,8 +43,8 @@ export default function Navbar() {
           </span>
         </NavLink>
 
-        <NavLink 
-          to="/login" 
+        <NavLink
+          to="/login"
           className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
           style={{ marginLeft: '1rem', borderLeft: '1px solid var(--border)', paddingLeft: '1rem' }}
         >

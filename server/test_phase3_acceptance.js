@@ -183,10 +183,15 @@ async function runTests() {
       ('confidence' in ld.ownerName) &&
       ('confidenceSource' in ld.ownerName);
 
+    const hasNumericLocalConfidence =
+      typeof processedDoc.ocrResult?.meanConfidence === 'number' &&
+      typeof ld.ownerName?.confidence === 'number' &&
+      typeof ld.landArea?.confidence === 'number';
+
     assert(
       'Test 6: Extracted fields conform strictly to defined schema',
-      allFieldsPresent && ownerFieldConforms,
-      `[Owner: "${ld.ownerName.value}", Area: "${ld.landArea.value} ${ld.landArea.unit}"]`
+      allFieldsPresent && ownerFieldConforms && hasNumericLocalConfidence,
+      `[Owner: "${ld.ownerName.value}", Area: "${ld.landArea.value} ${ld.landArea.unit}", meanConfidence: ${processedDoc.ocrResult?.meanConfidence}]`
     );
   }
 
@@ -217,11 +222,20 @@ async function runTests() {
         persistedDoc.ocrResult.fullText.length > 0 &&
         persistedDoc.ocrResult.processedAt &&
         persistedDoc.ocrResult.engine;
+      const validationPersisted =
+        typeof persistedDoc.extractionValidation?.score === 'number' &&
+        persistedDoc.extractionValidation?.categories?.requiredFields &&
+        Array.isArray(persistedDoc.extractionValidation?.failedChecks);
 
       assert(
         'Test 8: Raw OCR text and metadata persist in MongoDB',
         Boolean(ocrPersisted),
         `[Length: ${persistedDoc.ocrResult?.fullText?.length} chars, ProcessedAt: ${persistedDoc.ocrResult?.processedAt}]`
+      );
+      assert(
+        'Test 8b: Extraction validation score and review checks persist in MongoDB',
+        Boolean(validationPersisted),
+        `[Score: ${persistedDoc.extractionValidation?.score}, Failed checks: ${persistedDoc.extractionValidation?.failedChecks?.length}]`
       );
     } catch (err) {
       assert('Test 8: MongoDB persistence check', false, err.message);

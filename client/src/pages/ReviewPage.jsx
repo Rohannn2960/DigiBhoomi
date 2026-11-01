@@ -1,15 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { fetchDocumentById, getDocumentFileUrl, processDocument } from '../services/api';
+import {
+  fetchDocumentById,
+  getDocumentFileUrl,
+  processDocument,
+  analyzeDocumentConflicts,
+  updateDocument,
+  fetchDocumentAuditHistory,
+  verifyDocumentIntegrity
+} from '../services/api';
 import { getRecordById } from '../data/mockRecords';
 import DocumentViewer from '../components/DocumentViewer';
 import StatusBadge from '../components/StatusBadge';
-import { 
-  ArrowLeft, 
-  Save, 
-  CheckCircle, 
-  AlertTriangle, 
-  Loader, 
+import {
+  ArrowLeft,
+  Save,
+  CheckCircle,
+  AlertTriangle,
+  Loader,
   AlertCircle,
   Sparkles,
   Cpu,
@@ -17,15 +25,37 @@ import {
   Check,
   FileText,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  GitCompare,
+  RefreshCw,
+  History,
+  User,
+  Clock,
+  ShieldCheck
 } from 'lucide-react';
 
 const defaultField = {
   value: '',
+  rawText: null,
   rawOcrText: null,
   confidence: null,
+  confidenceSource: null,
   isFlagged: false,
   reviewStatus: 'Unreviewed'
+};
+
+const formatConfidenceValue = (value) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'Not available';
+  }
+
+  const normalized = value > 1 ? value / 100 : value;
+  return `${normalized.toFixed(2)} / 1.00`;
+};
+
+const getOverallConfidence = (record) => {
+  const value = record?.ocrResult?.meanConfidence;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 };
 
 const normalizeLandDetails = (details = {}) => ({
@@ -56,6 +86,57 @@ export default function ReviewPage() {
   const [selectedLanguage, setSelectedLanguage] = useState('auto');
   const [showRawOcr, setShowRawOcr] = useState(true);
   const [copiedText, setCopiedText] = useState(false);
+
+  // Phase 4 Duplicate & Conflict Detection State
+  const [isAnalyzingConflicts, setIsAnalyzingConflicts] = useState(false);
+  const [conflictActionMessage, setConflictActionMessage] = useState(null);
+
+  // Phase 4 Audit History State
+  const [isSaving, setIsSaving] = useState(false);
+  const [auditEvents, setAuditEvents] = useState([]);
+  const [isLoadingAudit, setIsLoadingAudit] = useState(false);
+  const [auditError, setAuditError] = useState(null);
+  const [auditSort, setAuditSort] = useState('asc');
+
+  // SHA-256 Integrity Verification State
+  const [isVerifyingIntegrity, setIsVerifyingIntegrity] = useState(false);
+  const [integrityResult, setIntegrityResult] = useState(null);
+  const [integrityError, setIntegrityError] = useState(null);
+
+  const handleVerifyIntegrity = async () => {
+    if (!record || !record._id) return;
+    setIsVerifyingIntegrity(true);
+    setIntegrityError(null);
+    try {
+      const res = await verifyDocumentIntegrity(record._id);
+      setIntegrityResult(res);
+      fetchAuditTrail();
+    } catch (err) {
+      setIntegrityError(err.message || 'Integrity check failed.');
+    } finally {
+      setIsVerifyingIntegrity(false);
+    }
+  };
+
+  const fetchAuditTrail = async () => {
+    if (!id) return;
+    setIsLoadingAudit(true);
+    setAuditError(null);
+    try {
+      const data = await fetchDocumentAuditHistory(id, { page: 1, limit: 50, sort: auditSort });
+      setAuditEvents(data.events || []);
+    } catch (err) {
+      setAuditError(err.message || 'Failed to load audit history.');
+    } finally {
+      setIsLoadingAudit(false);
+    }
+  };
+
+  useEffect(() => {
+    if (id) {
+      fetchAuditTrail();
+    }
+  }, [id, auditSort]);
 
   useEffect(() => {
     let isMounted = true;
@@ -102,15 +183,44 @@ export default function ReviewPage() {
     }));
   };
 
-  const handleSave = () => {
-    setSaveMessage('Field updates saved to local review state.');
-    setTimeout(() => setSaveMessage(null), 3000);
+  const handleSave = async () => {
+    if (!record || !record._id) return;
+    setIsSaving(true);
+    setSaveMessage(null);
+    try {
+      const updated = await updateDocument(record._id, { landDetails: formData });
+      setRecord(prev => ({
+        ...prev,
+        landDetails: updated.landDetails,
+        extractionValidation: updated.extractionValidation
+      }));
+      setSaveMessage('Field updates saved and recorded in audit log.');
+      setTimeout(() => setSaveMessage(null), 3500);
+      fetchAuditTrail();
+    } catch (err) {
+      setSaveMessage(`Failed to save: ${err.message}`);
+      setTimeout(() => setSaveMessage(null), 4000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleVerify = () => {
-    setRecord(prev => ({ ...prev, status: 'Verified' }));
-    setSaveMessage('Document marked as Verified!');
-    setTimeout(() => setSaveMessage(null), 3000);
+  const handleVerify = async () => {
+    if (!record || !record._id) return;
+    setIsSaving(true);
+    setSaveMessage(null);
+    try {
+      const updated = await updateDocument(record._id, { status: 'Verified' });
+      setRecord(prev => ({ ...prev, status: updated.status }));
+      setSaveMessage('Document marked as Verified and logged in audit history!');
+      setTimeout(() => setSaveMessage(null), 3500);
+      fetchAuditTrail();
+    } catch (err) {
+      setSaveMessage(`Verification failed: ${err.message}`);
+      setTimeout(() => setSaveMessage(null), 4000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleRunOcr = async () => {
@@ -133,8 +243,10 @@ export default function ReviewPage() {
       setFormData(normalizeLandDetails(updatedDoc.landDetails));
       setSaveMessage(`Extraction completed using ${updatedDoc.ocrResult?.engine || selectedEngine}!`);
       setTimeout(() => setSaveMessage(null), 4000);
+      fetchAuditTrail();
     } catch (err) {
       setProcessingError(err.message || 'Failed to process document.');
+      fetchAuditTrail();
     } finally {
       setIsProcessing(false);
     }
@@ -145,6 +257,28 @@ export default function ReviewPage() {
       navigator.clipboard.writeText(record.ocrResult.fullText);
       setCopiedText(true);
       setTimeout(() => setCopiedText(false), 2000);
+    }
+  };
+
+  const handleRefreshConflicts = async () => {
+    if (!record || !record._id) return;
+    setIsAnalyzingConflicts(true);
+    setConflictActionMessage(null);
+    try {
+      const data = await analyzeDocumentConflicts(record._id);
+      setRecord(prev => ({
+        ...prev,
+        duplicateDetection: data.duplicateDetection,
+        conflictDetection: data.conflictDetection
+      }));
+      setConflictActionMessage('Cross-record analysis updated.');
+      setTimeout(() => setConflictActionMessage(null), 3000);
+      fetchAuditTrail();
+    } catch (err) {
+      setConflictActionMessage(`Analysis check failed: ${err.message}`);
+      setTimeout(() => setConflictActionMessage(null), 4000);
+    } finally {
+      setIsAnalyzingConflicts(false);
     }
   };
 
@@ -179,22 +313,49 @@ export default function ReviewPage() {
     );
   }
 
+  const overallConfidence = getOverallConfidence(record);
+  const fieldConfidenceEntries = [
+    { key: 'ownerName', label: 'Owner Name' },
+    { key: 'khasraNumber', label: 'Khasra / Survey Number' },
+    { key: 'khataNumber', label: 'Khata / Khewat Number' },
+    { key: 'landArea', label: 'Land Area' },
+    { key: 'district', label: 'District' },
+    { key: 'tehsil', label: 'Tehsil' },
+    { key: 'village', label: 'Village' },
+    { key: 'landClassification', label: 'Land Classification' }
+  ]
+    .map(({ key, label }) => {
+      const field = formData[key];
+      if (!field || typeof field !== 'object') return null;
+      return {
+        key,
+        label,
+        confidence: field.confidence,
+        source: field.confidenceSource || 'Unspecified'
+      };
+    })
+    .filter(item => item && typeof item.confidence === 'number' && Number.isFinite(item.confidence));
+
+  const validation = record?.extractionValidation || null;
+  const duplicateDetection = record?.duplicateDetection || { hasPotentialDuplicates: false, duplicateCount: 0, matches: [] };
+  const conflictDetection = record?.conflictDetection || { hasConflicts: false, conflictCount: 0, conflicts: [] };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 120px)' }}>
       {/* Top Action Bar */}
-      <div 
-        style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between', 
-          alignItems: 'center', 
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
           marginBottom: '0.75rem',
           flexWrap: 'wrap',
           gap: '0.75rem'
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <button 
-            onClick={() => navigate('/records')} 
+          <button
+            onClick={() => navigate('/records')}
             className="btn btn-secondary"
             style={{ padding: '0.4rem 0.8rem', fontSize: '0.85rem' }}
           >
@@ -210,8 +371,19 @@ export default function ReviewPage() {
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', gap: '12px', marginTop: '2px', flexWrap: 'wrap' }}>
               <span>File: <strong>{record.fileMetadata?.originalFilename}</strong></span>
               <span>Size: {((record.fileMetadata?.sizeBytes || 0) / 1024).toFixed(1)} KB</span>
-              <span title={record.fileMetadata?.sha256Hash}>
+              <span title={record.fileMetadata?.sha256Hash} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                 SHA-256: <code>{record.fileMetadata?.sha256Hash?.substring(0, 16)}...</code>
+                <button
+                  type="button"
+                  onClick={handleVerifyIntegrity}
+                  disabled={isVerifyingIntegrity}
+                  className="btn btn-secondary"
+                  style={{ padding: '2px 8px', fontSize: '0.72rem', height: '22px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                  title="Verify cryptographic SHA-256 hash against disk file"
+                >
+                  <ShieldCheck size={12} />
+                  {isVerifyingIntegrity ? 'Verifying...' : 'Verify Integrity'}
+                </button>
               </span>
             </div>
           </div>
@@ -223,25 +395,73 @@ export default function ReviewPage() {
               {saveMessage}
             </span>
           )}
-          <button onClick={handleSave} className="btn btn-secondary">
-            <Save size={16} /> Save Edits
+          <button onClick={handleSave} className="btn btn-secondary" disabled={isSaving}>
+            <Save size={16} /> {isSaving ? 'Saving...' : 'Save Edits'}
           </button>
-          <button onClick={handleVerify} className="btn btn-success">
-            <CheckCircle size={16} /> Approve & Verify
+          <button onClick={handleVerify} className="btn btn-success" disabled={isSaving}>
+            <CheckCircle size={16} /> {isSaving ? 'Verifying...' : 'Approve & Verify'}
           </button>
         </div>
       </div>
 
+      {/* SHA-256 Cryptographic Integrity Verification Banner */}
+      {integrityResult && (
+        <div
+          style={{
+            background: integrityResult.isIntact ? '#f0fdf4' : '#fef2f2',
+            border: `1px solid ${integrityResult.isIntact ? '#bbf7d0' : '#fecaca'}`,
+            color: integrityResult.isIntact ? '#15803d' : '#991b1b',
+            padding: '0.6rem 1rem',
+            borderRadius: 'var(--radius)',
+            marginBottom: '0.75rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            fontSize: '0.85rem'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <ShieldCheck size={18} />
+            <span>
+              <strong>{integrityResult.isIntact ? 'Integrity Verified:' : 'Integrity Mismatch:'}</strong>{' '}
+              {integrityResult.message}
+            </span>
+          </div>
+          <span style={{ fontSize: '0.75rem', opacity: 0.85 }}>
+            Calculated Disk Hash: <code>{integrityResult.calculatedHash?.substring(0, 16)}...</code>
+          </span>
+        </div>
+      )}
+      {integrityError && (
+        <div
+          style={{
+            background: '#fee2e2',
+            border: '1px solid #fecaca',
+            color: '#991b1b',
+            padding: '0.6rem 1rem',
+            borderRadius: 'var(--radius)',
+            marginBottom: '0.75rem',
+            fontSize: '0.85rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}
+        >
+          <AlertCircle size={16} />
+          <span><strong>Integrity Check Error:</strong> {integrityError}</span>
+        </div>
+      )}
+
       {/* Phase 3 OCR Extraction Action Panel */}
-      <div 
-        style={{ 
-          background: '#ffffff', 
-          border: '1px solid var(--border)', 
-          borderRadius: 'var(--radius)', 
-          padding: '0.65rem 1rem', 
-          marginBottom: '0.75rem', 
-          display: 'flex', 
-          justifyContent: 'space-between', 
+      <div
+        style={{
+          background: '#ffffff',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--radius)',
+          padding: '0.65rem 1rem',
+          marginBottom: '0.75rem',
+          display: 'flex',
+          justifyContent: 'space-between',
           alignItems: 'center',
           flexWrap: 'wrap',
           gap: '0.75rem'
@@ -253,8 +473,8 @@ export default function ReviewPage() {
           </span>
 
           {/* Engine Selector */}
-          <select 
-            className="field-input" 
+          <select
+            className="field-input"
             style={{ width: 'auto', padding: '0.35rem 0.75rem', fontSize: '0.82rem' }}
             value={selectedEngine}
             onChange={(e) => setSelectedEngine(e.target.value)}
@@ -265,8 +485,8 @@ export default function ReviewPage() {
           </select>
 
           {/* Language Selector */}
-          <select 
-            className="field-input" 
+          <select
+            className="field-input"
             style={{ width: 'auto', padding: '0.35rem 0.75rem', fontSize: '0.82rem' }}
             value={selectedLanguage}
             onChange={(e) => setSelectedLanguage(e.target.value)}
@@ -282,8 +502,8 @@ export default function ReviewPage() {
         </div>
 
         <div>
-          <button 
-            onClick={handleRunOcr} 
+          <button
+            onClick={handleRunOcr}
             className="btn btn-primary"
             style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
             disabled={isProcessing}
@@ -304,13 +524,13 @@ export default function ReviewPage() {
 
       {/* Processing Error Notice */}
       {processingError && (
-        <div 
-          style={{ 
-            background: '#fee2e2', 
-            border: '1px solid #fecaca', 
-            color: '#991b1b', 
-            padding: '0.65rem 1rem', 
-            borderRadius: 'var(--radius)', 
+        <div
+          style={{
+            background: '#fee2e2',
+            border: '1px solid #fecaca',
+            color: '#991b1b',
+            padding: '0.65rem 1rem',
+            borderRadius: 'var(--radius)',
             marginBottom: '0.75rem',
             display: 'flex',
             alignItems: 'center',
@@ -347,18 +567,334 @@ export default function ReviewPage() {
           </div>
 
           <div className="form-body">
+            <div
+              style={{
+                background: '#f8fafc',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius)',
+                padding: '0.9rem 1rem',
+                marginBottom: '1.25rem'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.5rem' }}>
+                <Cpu size={16} color="var(--primary)" />
+                <strong style={{ fontSize: '0.88rem' }}>Confidence</strong>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+                <div style={{ background: '#ffffff', border: '1px solid var(--border)', borderRadius: '6px', padding: '0.6rem 0.75rem' }}>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Overall extraction confidence
+                  </div>
+                  <div style={{ fontWeight: 700, marginTop: '0.25rem', fontSize: '0.95rem' }}>
+                    {overallConfidence !== null ? formatConfidenceValue(overallConfidence) : 'Not available'}
+                  </div>
+                </div>
+
+                <div style={{ background: '#ffffff', border: '1px solid var(--border)', borderRadius: '6px', padding: '0.6rem 0.75rem' }}>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Validation TrustScore
+                  </div>
+                  <div style={{ fontWeight: 700, marginTop: '0.25rem', fontSize: '0.95rem' }}>
+                    Not available
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: '0.75rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                {overallConfidence !== null
+                  ? `Extraction confidence is reported by the selected engine and is not treated as a validated trust score.`
+                  : 'Gemini model output is intentionally kept uncalibrated, so no numeric confidence is displayed unless a separate scoring pipeline is provided.'}
+              </div>
+
+              {validation?.score !== null && validation?.score !== undefined && (
+                <div style={{ marginTop: '0.9rem', borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                    Extraction Validation Score
+                  </div>
+                  <div style={{ fontWeight: 700, fontSize: '1.2rem', marginTop: '0.2rem' }}>
+                    {Number(validation.score).toFixed(0)} / 100
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.5rem', marginTop: '0.6rem' }}>
+                    {Object.entries(validation.categories || {}).map(([key, category]) => (
+                      <div key={key} style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        <strong>{key.replace(/([A-Z])/g, ' $1')}</strong>: {Number(category.score || 0).toFixed(0)} / {category.weight}
+                      </div>
+                    ))}
+                  </div>
+                  {(validation.reviewReasons || []).length > 0 && (
+                    <div style={{ marginTop: '0.65rem', color: '#92400e', fontSize: '0.75rem' }}>
+                      <strong>Review warnings:</strong>
+                      <ul style={{ margin: '0.25rem 0 0 1rem', padding: 0 }}>
+                        {validation.reviewReasons.slice(0, 5).map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  <div style={{ marginTop: '0.65rem', color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+                    {validation.disclaimer || 'This score supports extraction review only; manual/legal verification may still be required.'}
+                  </div>
+                </div>
+              )}
+
+              {fieldConfidenceEntries.length > 0 && (
+                <div style={{ marginTop: '0.9rem' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.5rem', fontWeight: 600 }}>
+                    Per-field extraction confidence
+                  </div>
+                  <div style={{ display: 'grid', gap: '0.45rem' }}>
+                    {fieldConfidenceEntries.map(({ key, label, confidence, source }) => (
+                      <div
+                        key={key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '0.75rem',
+                          background: '#ffffff',
+                          border: '1px solid var(--border)',
+                          borderRadius: '6px',
+                          padding: '0.45rem 0.65rem',
+                          fontSize: '0.78rem'
+                        }}
+                      >
+                        <span>{label}</span>
+                        <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                          {formatConfidenceValue(confidence)}
+                        </span>
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>
+                          {source}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Phase 4: Duplicate & Cross-Record Conflict Detection Section */}
+            <div
+              style={{
+                background: '#f8fafc',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius)',
+                padding: '0.9rem 1rem',
+                marginBottom: '1.25rem'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <GitCompare size={17} color="var(--primary)" />
+                  <strong style={{ fontSize: '0.88rem' }}>Cross-Record Conflict & Duplicate Detection</strong>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {conflictActionMessage && (
+                    <span style={{ fontSize: '0.75rem', color: '#15803d', fontWeight: 600 }}>
+                      {conflictActionMessage}
+                    </span>
+                  )}
+                  <button
+                    onClick={handleRefreshConflicts}
+                    className="btn btn-secondary"
+                    style={{ padding: '0.25rem 0.6rem', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                    disabled={isAnalyzingConflicts}
+                    title="Scan indexed records for duplicates and conflicts"
+                  >
+                    <RefreshCw size={12} className={isAnalyzingConflicts ? 'spin' : ''} />
+                    {isAnalyzingConflicts ? 'Analyzing...' : 'Re-check Conflicts'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Status summary pills */}
+              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+                <span
+                  style={{
+                    fontSize: '0.72rem',
+                    fontWeight: 600,
+                    padding: '0.2rem 0.55rem',
+                    borderRadius: '12px',
+                    background: (duplicateDetection.duplicateCount || 0) > 0 ? '#fee2e2' : '#dcfce7',
+                    color: (duplicateDetection.duplicateCount || 0) > 0 ? '#991b1b' : '#166534',
+                    border: `1px solid ${(duplicateDetection.duplicateCount || 0) > 0 ? '#fecaca' : '#bbf7d0'}`
+                  }}
+                >
+                  {(duplicateDetection.duplicateCount || 0) > 0
+                    ? `⚠️ ${duplicateDetection.duplicateCount} Duplicate Candidate(s)`
+                    : '✓ No Duplicates'}
+                </span>
+                <span
+                  style={{
+                    fontSize: '0.72rem',
+                    fontWeight: 600,
+                    padding: '0.2rem 0.55rem',
+                    borderRadius: '12px',
+                    background: (conflictDetection.conflictCount || 0) > 0 ? '#fef3c7' : '#dcfce7',
+                    color: (conflictDetection.conflictCount || 0) > 0 ? '#92400e' : '#166534',
+                    border: `1px solid ${(conflictDetection.conflictCount || 0) > 0 ? '#fde68a' : '#bbf7d0'}`
+                  }}
+                >
+                  {(conflictDetection.conflictCount || 0) > 0
+                    ? `⚠️ ${conflictDetection.conflictCount} Cross-Record Conflict(s)`
+                    : '✓ No Cross-Record Conflicts'}
+                </span>
+              </div>
+
+              {/* 1. Duplicate Matches List */}
+              {(duplicateDetection.matches || []).length > 0 && (
+                <div style={{ marginBottom: '0.9rem' }}>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#991b1b', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <AlertTriangle size={13} />
+                    Potential Duplicate Candidates:
+                  </div>
+                  <div style={{ display: 'grid', gap: '0.5rem' }}>
+                    {(duplicateDetection.matches || []).map((match, idx) => (
+                      <div
+                        key={match.targetDocumentId || idx}
+                        style={{
+                          background: '#fff',
+                          border: '1px solid #fecaca',
+                          borderLeft: '3px solid #dc2626',
+                          borderRadius: '6px',
+                          padding: '0.55rem 0.75rem',
+                          fontSize: '0.78rem'
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.3rem' }}>
+                          <span
+                            style={{
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              textTransform: 'uppercase',
+                              padding: '0.15rem 0.4rem',
+                              borderRadius: '4px',
+                              background: match.matchType === 'EXACT_DUPLICATE' ? '#fee2e2' : '#fef3c7',
+                              color: match.matchType === 'EXACT_DUPLICATE' ? '#991b1b' : '#92400e'
+                            }}
+                          >
+                            {match.matchType === 'EXACT_DUPLICATE' ? 'Exact Duplicate' : 'Possible Duplicate'}
+                          </span>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                            Target Record #{String(match.targetDocumentId || '').slice(-6)} ({match.targetFilename || 'Record'})
+                          </span>
+                        </div>
+                        <p style={{ margin: '0 0 0.35rem 0', color: 'var(--text-main)', fontSize: '0.76rem' }}>
+                          {match.explanation}
+                        </p>
+                        <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>Matched fields:</span>
+                          {(match.matchedFields || []).map((field, fIdx) => (
+                            <span
+                              key={fIdx}
+                              style={{
+                                background: '#f1f5f9',
+                                border: '1px solid #e2e8f0',
+                                padding: '0.1rem 0.35rem',
+                                borderRadius: '3px',
+                                fontSize: '0.68rem',
+                                color: '#334155'
+                              }}
+                            >
+                              {field}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 2. Cross-Record Conflicts List */}
+              {(conflictDetection.conflicts || []).length > 0 && (
+                <div style={{ marginBottom: '0.65rem' }}>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#92400e', marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <AlertTriangle size={13} />
+                    Cross-Record Conflict Warnings:
+                  </div>
+                  <div style={{ display: 'grid', gap: '0.55rem' }}>
+                    {(conflictDetection.conflicts || []).map((conflict, cIdx) => (
+                      <div
+                        key={conflict.targetDocumentId || cIdx}
+                        style={{
+                          background: '#fff',
+                          border: '1px solid #fde68a',
+                          borderLeft: '3px solid #d97706',
+                          borderRadius: '6px',
+                          padding: '0.55rem 0.75rem',
+                          fontSize: '0.78rem'
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                          <strong style={{ fontSize: '0.75rem', color: '#92400e' }}>
+                            Shared Land Parcel ({(conflict.sharedIdentifiers || []).map(i => `${i.field}: ${i.value}`).join(', ') || 'Shared Identifier'})
+                          </strong>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                            vs. Record #{String(conflict.targetDocumentId || '').slice(-6)}
+                          </span>
+                        </div>
+                        <div style={{ display: 'grid', gap: '0.4rem', marginBottom: '0.4rem' }}>
+                          {(conflict.conflictingFields || []).map((cf, fIdx) => (
+                            <div
+                              key={fIdx}
+                              style={{
+                                background: '#fdf8f6',
+                                border: '1px solid #fee2e2',
+                                borderRadius: '4px',
+                                padding: '0.4rem 0.55rem'
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600, fontSize: '0.74rem', marginBottom: '0.2rem' }}>
+                                <span>{cf.label || cf.field}</span>
+                              </div>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.72rem' }}>
+                                <div>
+                                  <span style={{ color: 'var(--text-muted)' }}>This document: </span>
+                                  <strong>{cf.currentValue || '(empty)'}</strong>
+                                </div>
+                                <div>
+                                  <span style={{ color: 'var(--text-muted)' }}>Compared record: </span>
+                                  <strong>{cf.targetValue || '(empty)'}</strong>
+                                </div>
+                              </div>
+                              <div style={{ marginTop: '0.25rem', fontSize: '0.7rem', color: '#78350f' }}>
+                                <em>{cf.reason}</em>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Informational clean message when neither duplicate nor conflict */}
+              {(!duplicateDetection.duplicateCount && !conflictDetection.conflictCount) && (
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <CheckCircle size={14} color="#16a34a" />
+                  <span>No duplicate records or cross-record field conflicts detected for this land parcel.</span>
+                </div>
+              )}
+
+              {/* Disclaimer */}
+              <div style={{ marginTop: '0.5rem', fontSize: '0.7rem', color: 'var(--text-muted)', borderTop: '1px solid #e2e8f0', paddingTop: '0.45rem' }}>
+                {conflictDetection.disclaimer ||
+                  'Cross-record conflicts indicate potential data variances or historical transactions requiring human review. They do not constitute proof of fraud or document invalidity.'}
+              </div>
+            </div>
+
             {/* Raw OCR Text Section (Collapsible) */}
             {record.ocrResult?.fullText && (
-              <div 
-                style={{ 
-                  background: '#f8fafc', 
-                  border: '1px solid var(--border)', 
-                  borderRadius: 'var(--radius)', 
-                  padding: '0.75rem 1rem', 
-                  marginBottom: '1.25rem' 
+              <div
+                style={{
+                  background: '#f8fafc',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius)',
+                  padding: '0.75rem 1rem',
+                  marginBottom: '1.25rem'
                 }}
               >
-                <div 
+                <div
                   style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
                   onClick={() => setShowRawOcr(!showRawOcr)}
                 >
@@ -371,9 +907,9 @@ export default function ReviewPage() {
                   </div>
 
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); handleCopyRawText(); }} 
-                      className="btn btn-secondary" 
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleCopyRawText(); }}
+                      className="btn btn-secondary"
                       style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
                       title="Copy raw text to clipboard"
                     >
@@ -571,6 +1107,232 @@ export default function ReviewPage() {
                 onChange={(e) => handleFieldChange('landClassification', 'value', e.target.value)}
                 placeholder="e.g. Agricultural / Dry / Wet / Commercial"
               />
+            </div>
+
+            {/* Phase 4: Document Audit History Section */}
+            <div
+              style={{
+                background: '#ffffff',
+                border: '1px solid var(--border)',
+                borderRadius: 'var(--radius)',
+                padding: '1rem',
+                marginTop: '1.25rem'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <History size={18} color="var(--primary)" />
+                  <strong style={{ fontSize: '0.95rem' }}>Audit History & Activity Log</strong>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: '#f1f5f9', padding: '0.15rem 0.45rem', borderRadius: '10px' }}>
+                    Append-Only Log
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <select
+                    className="field-input"
+                    style={{ width: 'auto', padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
+                    value={auditSort}
+                    onChange={(e) => setAuditSort(e.target.value)}
+                  >
+                    <option value="asc">Chronological (Oldest First)</option>
+                    <option value="desc">Latest Activity First</option>
+                  </select>
+                  <button
+                    onClick={fetchAuditTrail}
+                    className="btn btn-secondary"
+                    style={{ padding: '0.25rem 0.6rem', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                    disabled={isLoadingAudit}
+                    title="Refresh audit history"
+                  >
+                    <RefreshCw size={12} className={isLoadingAudit ? 'spin' : ''} />
+                    {isLoadingAudit ? 'Refreshing...' : 'Refresh'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Loading State */}
+              {isLoadingAudit && (
+                <div style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                  <Loader size={20} className="spin" style={{ margin: '0 auto 0.5rem', display: 'block', color: 'var(--primary)' }} />
+                  Loading audit history...
+                </div>
+              )}
+
+              {/* Error State */}
+              {auditError && (
+                <div
+                  style={{
+                    background: '#fef2f2',
+                    border: '1px solid #fecaca',
+                    borderRadius: '6px',
+                    padding: '0.75rem 1rem',
+                    color: '#991b1b',
+                    fontSize: '0.85rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '8px'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <AlertCircle size={16} />
+                    <span>Failed to load audit history: {auditError}</span>
+                  </div>
+                  <button onClick={fetchAuditTrail} className="btn btn-secondary" style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}>
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Empty State */}
+              {!isLoadingAudit && !auditError && auditEvents.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                  <History size={28} style={{ margin: '0 auto 0.5rem', opacity: 0.4 }} />
+                  <p style={{ margin: 0 }}>No audit events recorded for this document yet.</p>
+                </div>
+              )}
+
+              {/* Audit Events Timeline / List */}
+              {!isLoadingAudit && !auditError && auditEvents.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {auditEvents.map((evt, idx) => (
+                    <div
+                      key={evt._id || idx}
+                      style={{
+                        border: '1px solid var(--border)',
+                        borderLeft: `4px solid ${
+                          evt.outcome === 'FAILURE' ? '#dc2626' : evt.action === 'STATUS_UPDATED' ? '#16a34a' : 'var(--primary)'
+                        }`,
+                        borderRadius: '6px',
+                        padding: '0.75rem',
+                        background: evt.outcome === 'FAILURE' ? '#fff5f5' : '#fcfcfc',
+                        fontSize: '0.82rem'
+                      }}
+                    >
+                      {/* Header Row: Action badge, Actor & Role, Timestamp, Outcome */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', marginBottom: '0.35rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          <span
+                            style={{
+                              fontWeight: 700,
+                              fontSize: '0.72rem',
+                              padding: '0.15rem 0.45rem',
+                              borderRadius: '4px',
+                              background:
+                                evt.action === 'STATUS_UPDATED'
+                                  ? '#dcfce7'
+                                  : evt.action === 'FIELD_EDITS_SAVED'
+                                  ? '#e0e7ff'
+                                  : evt.action === 'DOCUMENT_UPLOADED'
+                                  ? '#e0f2fe'
+                                  : evt.action === 'OCR_PROCESSING_FAILED'
+                                  ? '#fee2e2'
+                                  : '#f1f5f9',
+                              color:
+                                evt.action === 'STATUS_UPDATED'
+                                  ? '#166534'
+                                  : evt.action === 'FIELD_EDITS_SAVED'
+                                  ? '#3730a3'
+                                  : evt.action === 'DOCUMENT_UPLOADED'
+                                  ? '#0369a1'
+                                  : evt.action === 'OCR_PROCESSING_FAILED'
+                                  ? '#991b1b'
+                                  : '#334155'
+                            }}
+                          >
+                            {evt.action.replace(/_/g, ' ')}
+                          </span>
+
+                          {/* Actor Badge */}
+                          <span
+                            style={{
+                              fontSize: '0.72rem',
+                              color: 'var(--text-muted)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              background: '#f8fafc',
+                              border: '1px solid #e2e8f0',
+                              padding: '0.1rem 0.4rem',
+                              borderRadius: '4px'
+                            }}
+                          >
+                            <User size={12} />
+                            <span>
+                              Actor: <strong>{evt.actor?.id || 'Anonymous'}</strong>
+                              {evt.actor?.role ? ` (${evt.actor.role})` : ` [${evt.actor?.type || 'SYSTEM'}]`}
+                            </span>
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span
+                            style={{
+                              fontSize: '0.68rem',
+                              fontWeight: 600,
+                              padding: '0.1rem 0.35rem',
+                              borderRadius: '3px',
+                              background: evt.outcome === 'FAILURE' ? '#fee2e2' : '#dcfce7',
+                              color: evt.outcome === 'FAILURE' ? '#991b1b' : '#166534'
+                            }}
+                          >
+                            {evt.outcome}
+                          </span>
+                          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                            <Clock size={12} />
+                            {new Date(evt.timestamp).toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Description */}
+                      <div style={{ color: 'var(--text-main)', marginBottom: evt.details?.diffs?.length ? '0.5rem' : '0.2rem' }}>
+                        {evt.description}
+                      </div>
+
+                      {/* If there was an error message */}
+                      {evt.errorMessage && (
+                        <div style={{ color: '#dc2626', fontSize: '0.75rem', fontWeight: 500, marginTop: '0.25rem' }}>
+                          Error: {evt.errorMessage}
+                        </div>
+                      )}
+
+                      {/* If there are field diffs, display them nicely */}
+                      {evt.details?.diffs && evt.details.diffs.length > 0 && (
+                        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '4px', padding: '0.4rem 0.6rem', marginTop: '0.35rem' }}>
+                          <div style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', marginBottom: '0.25rem' }}>
+                            Changed Land Attributes:
+                          </div>
+                          <div style={{ display: 'grid', gap: '0.3rem' }}>
+                            {evt.details.diffs.map((diff, dIdx) => (
+                              <div key={dIdx} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }}>
+                                <span style={{ fontWeight: 600, minWidth: '120px' }}>{diff.label || diff.field}:</span>
+                                <span style={{ color: '#991b1b', textDecoration: 'line-through', background: '#fee2e2', padding: '0.05rem 0.3rem', borderRadius: '3px' }}>
+                                  {diff.before || '(empty)'}
+                                </span>
+                                <span style={{ color: 'var(--text-muted)' }}>➔</span>
+                                <span style={{ color: '#166534', fontWeight: 600, background: '#dcfce7', padding: '0.05rem 0.3rem', borderRadius: '3px' }}>
+                                  {diff.after || '(empty)'}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* If status was changed */}
+                      {evt.action === 'STATUS_UPDATED' && evt.details?.previousStatus && evt.details?.newStatus && (
+                        <div style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>
+                          <span>Transition: </span>
+                          <span style={{ textDecoration: 'line-through', color: '#64748b' }}>{evt.details.previousStatus}</span>
+                          <span style={{ margin: '0 4px' }}>➔</span>
+                          <strong style={{ color: '#16a34a' }}>{evt.details.newStatus}</strong>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

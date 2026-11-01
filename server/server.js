@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 require('dotenv').config();
 
 const documentRoutes = require('./routes/documents');
+const searchRoutes = require('./routes/search');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -34,6 +35,9 @@ app.get('/api/health', (req, res) => {
 
 // Mount Document API Routes
 app.use('/api/documents', documentRoutes);
+
+// Mount Semantic Search API Routes
+app.use('/api/search', searchRoutes);
 
 // Global 404 handler for API routes
 app.use('/api/*', (req, res) => {

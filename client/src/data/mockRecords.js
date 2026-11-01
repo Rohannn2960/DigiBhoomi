@@ -83,6 +83,17 @@ const defaultRecords = [
         isFlagged: true,
         reviewStatus: "Unreviewed"
       }
+    },
+    duplicateDetection: {
+      hasPotentialDuplicates: false,
+      duplicateCount: 0,
+      matches: []
+    },
+    conflictDetection: {
+      hasConflicts: false,
+      conflictCount: 0,
+      conflicts: [],
+      disclaimer: "Cross-record conflicts indicate potential data variances or historical transactions requiring human review. They do not constitute proof of fraud or document invalidity."
     }
   },
   {
