@@ -16,6 +16,7 @@ export default function VersionComparisonModal({
   const [comparisonData, setComparisonData] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [viewFilter, setViewFilter] = useState('all'); // 'all' | 'changed'
 
   if (prevProps.initialFrom !== initialFrom || prevProps.initialTo !== initialTo) {
     setPrevProps({ initialFrom, initialTo });
@@ -53,8 +54,20 @@ export default function VersionComparisonModal({
   };
 
   const differences = comparisonData?.differences || [];
+  const allFields = comparisonData?.allFields || differences;
+  const summary = comparisonData?.summary || {
+    totalFields: allFields.length,
+    changedFields: differences.length,
+    unchangedFields: allFields.length - differences.length,
+    addedCount: differences.filter(d => d.changeCategory === 'added').length,
+    modifiedCount: differences.filter(d => d.changeCategory === 'modified').length,
+    removedCount: differences.filter(d => d.changeCategory === 'removed').length
+  };
+
   const fromMeta = comparisonData?.fromVersion || {};
   const toMeta = comparisonData?.toVersion || {};
+
+  const displayedFields = viewFilter === 'changed' ? differences : allFields;
 
   return (
     <div
@@ -75,9 +88,9 @@ export default function VersionComparisonModal({
         style={{
           background: '#ffffff',
           borderRadius: 'var(--radius)',
-          maxWidth: '920px',
+          maxWidth: '960px',
           width: '100%',
-          maxHeight: '90vh',
+          maxHeight: '92vh',
           display: 'flex',
           flexDirection: 'column',
           boxShadow: 'var(--shadow-lg)',
@@ -97,9 +110,23 @@ export default function VersionComparisonModal({
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <GitCompare size={20} color="var(--primary)" />
-            <strong style={{ fontSize: '1.1rem' }}>Compare Document Versions</strong>
+            <div>
+              <strong style={{ fontSize: '1.05rem', display: 'block' }}>
+                Compare Document Versions
+              </strong>
+              {comparisonData?.documentReference && (
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Ref: {comparisonData.documentReference}
+                </span>
+              )}
+            </div>
           </div>
-          <button onClick={onClose} className="btn btn-secondary" style={{ padding: '0.3rem 0.5rem', border: 'none' }}>
+          <button
+            onClick={onClose}
+            className="btn btn-secondary"
+            style={{ padding: '0.3rem 0.5rem', border: 'none' }}
+            aria-label="Close"
+          >
             <X size={18} />
           </button>
         </div>
@@ -120,7 +147,7 @@ export default function VersionComparisonModal({
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
             <div>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-                Base Version:
+                Base Version (Left):
               </span>
               <select
                 className="field-input"
@@ -141,13 +168,14 @@ export default function VersionComparisonModal({
               className="btn btn-secondary"
               style={{ padding: '0.4rem 0.6rem', marginTop: '14px', fontSize: '0.75rem' }}
               title="Swap versions"
+              disabled={fromVersion === toVersion}
             >
               <ArrowLeftRight size={14} />
             </button>
 
             <div>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>
-                Compared Version:
+                Compared Version (Right):
               </span>
               <select
                 className="field-input"
@@ -164,19 +192,41 @@ export default function VersionComparisonModal({
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem' }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ width: '10px', height: '10px', borderRadius: '2px', background: '#dcfce7', border: '1px solid #86efac' }}></span>
-              Added
-            </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ width: '10px', height: '10px', borderRadius: '2px', background: '#dbeafe', border: '1px solid #93c5fd' }}></span>
-              Modified
-            </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ width: '10px', height: '10px', borderRadius: '2px', background: '#fee2e2', border: '1px solid #fca5a5' }}></span>
-              Removed
-            </span>
+          {/* Filter view toggles */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', border: '1px solid var(--border)', borderRadius: '6px', overflow: 'hidden' }}>
+              <button
+                type="button"
+                onClick={() => setViewFilter('all')}
+                style={{
+                  padding: '0.3rem 0.65rem',
+                  fontSize: '0.75rem',
+                  fontWeight: viewFilter === 'all' ? 700 : 500,
+                  background: viewFilter === 'all' ? 'var(--primary)' : '#ffffff',
+                  color: viewFilter === 'all' ? '#ffffff' : 'var(--text-main)',
+                  border: 'none',
+                  cursor: 'pointer'
+                }}
+              >
+                All Fields ({summary.totalFields})
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewFilter('changed')}
+                style={{
+                  padding: '0.3rem 0.65rem',
+                  fontSize: '0.75rem',
+                  fontWeight: viewFilter === 'changed' ? 700 : 500,
+                  background: viewFilter === 'changed' ? 'var(--primary)' : '#ffffff',
+                  color: viewFilter === 'changed' ? '#ffffff' : 'var(--text-main)',
+                  border: 'none',
+                  borderLeft: '1px solid var(--border)',
+                  cursor: 'pointer'
+                }}
+              >
+                Changed Only ({summary.changedFields})
+              </button>
+            </div>
           </div>
         </div>
 
@@ -187,6 +237,9 @@ export default function VersionComparisonModal({
             <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
               <AlertCircle size={28} style={{ margin: '0 auto 0.5rem', opacity: 0.5 }} />
               <p style={{ margin: 0, fontWeight: 500 }}>Please select two different versions to compare.</p>
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.78rem' }}>
+                Comparison requires distinct versions of the same document.
+              </p>
             </div>
           )}
 
@@ -218,6 +271,81 @@ export default function VersionComparisonModal({
           {/* Comparison Result */}
           {!isLoading && !error && comparisonData && fromVersion !== toVersion && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              {/* Summary Statistics Bar */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  flexWrap: 'wrap',
+                  padding: '0.65rem 1rem',
+                  background: '#f8fafc',
+                  border: '1px solid var(--border)',
+                  borderRadius: '6px',
+                  fontSize: '0.78rem'
+                }}
+              >
+                <span style={{ fontWeight: 600, color: '#475569' }}>Comparison Summary:</span>
+                <span
+                  style={{
+                    padding: '0.15rem 0.5rem',
+                    borderRadius: '4px',
+                    background: '#f1f5f9',
+                    color: '#334155',
+                    fontWeight: 600
+                  }}
+                >
+                  {summary.totalFields} Total Fields
+                </span>
+                <span
+                  style={{
+                    padding: '0.15rem 0.5rem',
+                    borderRadius: '4px',
+                    background: '#dcfce7',
+                    border: '1px solid #86efac',
+                    color: '#15803d',
+                    fontWeight: 600
+                  }}
+                >
+                  +{summary.addedCount} Added
+                </span>
+                <span
+                  style={{
+                    padding: '0.15rem 0.5rem',
+                    borderRadius: '4px',
+                    background: '#dbeafe',
+                    border: '1px solid #93c5fd',
+                    color: '#1d4ed8',
+                    fontWeight: 600
+                  }}
+                >
+                  Δ {summary.modifiedCount} Modified
+                </span>
+                <span
+                  style={{
+                    padding: '0.15rem 0.5rem',
+                    borderRadius: '4px',
+                    background: '#fee2e2',
+                    border: '1px solid #fca5a5',
+                    color: '#b91c1c',
+                    fontWeight: 600
+                  }}
+                >
+                  -{summary.removedCount} Removed
+                </span>
+                <span
+                  style={{
+                    padding: '0.15rem 0.5rem',
+                    borderRadius: '4px',
+                    background: '#f8fafc',
+                    border: '1px solid #e2e8f0',
+                    color: '#64748b'
+                  }}
+                >
+                  {summary.unchangedFields} Unchanged
+                </span>
+              </div>
+
               {/* Version Comparison Header Cards */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
                 {/* Base Version Card */}
@@ -263,25 +391,31 @@ export default function VersionComparisonModal({
                 </div>
               </div>
 
-              {/* No differences banner */}
-              {differences.length === 0 && (
+              {/* No differences banner (if filtered to changed or completely identical) */}
+              {displayedFields.length === 0 && (
                 <div style={{ textAlign: 'center', padding: '2.5rem 1rem', background: '#f8fafc', borderRadius: '6px', border: '1px dashed var(--border)' }}>
                   <CheckCircle2 size={24} color="#16a34a" style={{ margin: '0 auto 0.5rem' }} />
                   <p style={{ margin: 0, fontWeight: 600, fontSize: '0.9rem' }}>
-                    No attribute or file differences found between Version {fromVersion} and Version {toVersion}.
+                    {viewFilter === 'changed'
+                      ? `No differences found between Version ${fromVersion} and Version ${toVersion}.`
+                      : 'No comparison fields available.'}
                   </p>
                   <p style={{ margin: '0.25rem 0 0', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                    All extracted fields and document hashes match identically.
+                    {viewFilter === 'changed'
+                      ? 'Switch to "All Fields" above to view all identical record attributes.'
+                      : 'All extracted metadata values match.'}
                   </p>
                 </div>
               )}
 
-              {/* Differences Table */}
-              {differences.length > 0 && (
+              {/* Differences & Fields Table */}
+              {displayedFields.length > 0 && (
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                     <strong style={{ fontSize: '0.88rem' }}>
-                      Changed Fields ({differences.length} variance{differences.length > 1 ? 's' : ''}):
+                      {viewFilter === 'changed'
+                        ? `Changed Fields (${displayedFields.length} variance${displayedFields.length > 1 ? 's' : ''}):`
+                        : `All Record Fields (${displayedFields.length} attributes):`}
                     </strong>
                   </div>
 
@@ -290,7 +424,7 @@ export default function VersionComparisonModal({
                       <thead>
                         <tr style={{ background: '#f8fafc', borderBottom: '1px solid var(--border)' }}>
                           <th style={{ padding: '0.6rem 0.85rem', textAlign: 'left', fontWeight: 600, width: '22%' }}>Field / Attribute</th>
-                          <th style={{ padding: '0.6rem 0.85rem', textAlign: 'left', fontWeight: 600, width: '14%' }}>Change Type</th>
+                          <th style={{ padding: '0.6rem 0.85rem', textAlign: 'left', fontWeight: 600, width: '14%' }}>Status</th>
                           <th style={{ padding: '0.6rem 0.85rem', textAlign: 'left', fontWeight: 600, width: '32%' }}>
                             v{fromVersion} Value (Previous)
                           </th>
@@ -300,18 +434,19 @@ export default function VersionComparisonModal({
                         </tr>
                       </thead>
                       <tbody>
-                        {differences.map((diff, idx) => {
+                        {displayedFields.map((diff, idx) => {
                           const category = diff.changeCategory || 'modified';
                           const isAdded = category === 'added';
                           const isRemoved = category === 'removed';
                           const isModified = category === 'modified';
+                          const isUnchanged = category === 'unchanged';
 
                           return (
                             <tr
                               key={diff.field || idx}
                               style={{
-                                borderBottom: idx < differences.length - 1 ? '1px solid var(--border)' : 'none',
-                                background: isAdded ? '#f0fdf4' : isRemoved ? '#fef2f2' : '#f8fafc'
+                                borderBottom: idx < displayedFields.length - 1 ? '1px solid var(--border)' : 'none',
+                                background: isAdded ? '#f0fdf4' : isRemoved ? '#fef2f2' : isModified ? '#f8fafc' : '#ffffff'
                               }}
                             >
                               <td style={{ padding: '0.6rem 0.85rem', fontWeight: 600 }}>
@@ -325,17 +460,29 @@ export default function VersionComparisonModal({
                                     fontWeight: 700,
                                     padding: '0.15rem 0.45rem',
                                     borderRadius: '4px',
-                                    background: isAdded ? '#dcfce7' : isRemoved ? '#fee2e2' : '#dbeafe',
-                                    color: isAdded ? '#15803d' : isRemoved ? '#b91c1c' : '#1d4ed8'
+                                    background: isAdded
+                                      ? '#dcfce7'
+                                      : isRemoved
+                                      ? '#fee2e2'
+                                      : isModified
+                                      ? '#dbeafe'
+                                      : '#f1f5f9',
+                                    color: isAdded
+                                      ? '#15803d'
+                                      : isRemoved
+                                      ? '#b91c1c'
+                                      : isModified
+                                      ? '#1d4ed8'
+                                      : '#475569'
                                   }}
                                 >
-                                  {isAdded ? '+ Added' : isRemoved ? '- Removed' : 'Δ Modified'}
+                                  {isAdded ? '+ Added' : isRemoved ? '- Removed' : isModified ? 'Δ Modified' : 'Unchanged'}
                                 </span>
                               </td>
                               <td style={{ padding: '0.6rem 0.85rem' }}>
                                 <div
                                   style={{
-                                    color: isRemoved ? '#b91c1c' : '#64748b',
+                                    color: isRemoved ? '#b91c1c' : isUnchanged ? '#334155' : '#64748b',
                                     textDecoration: isRemoved || isModified ? 'line-through' : 'none',
                                     background: isRemoved ? '#fee2e2' : 'transparent',
                                     padding: isRemoved ? '0.15rem 0.35rem' : '0',
@@ -350,8 +497,8 @@ export default function VersionComparisonModal({
                               <td style={{ padding: '0.6rem 0.85rem' }}>
                                 <div
                                   style={{
-                                    fontWeight: 600,
-                                    color: isAdded ? '#15803d' : '#0f172a',
+                                    fontWeight: isUnchanged ? 400 : 600,
+                                    color: isAdded ? '#15803d' : isUnchanged ? '#334155' : '#0f172a',
                                     background: isAdded ? '#dcfce7' : isModified ? '#dbeafe' : 'transparent',
                                     padding: isAdded || isModified ? '0.15rem 0.4rem' : '0',
                                     borderRadius: '3px',

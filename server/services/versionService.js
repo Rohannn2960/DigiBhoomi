@@ -238,100 +238,235 @@ async function recordDocumentVersion(document, {
 }
 
 /**
+ * Normalizes values for comparison to prevent false positives from formatting or units.
+ */
+function normalizeComparisonValue(val) {
+  if (val === null || val === undefined) return '';
+  const str = String(val).trim();
+  if (!str || str === '(empty)') return '';
+
+  // Numeric equivalence: e.g. "102" or "2.50" vs "2.5"
+  if (/^-?\d+(\.\d+)?$/.test(str)) {
+    return String(parseFloat(str));
+  }
+
+  // Value with unit: e.g. "2.50 Acre" vs "2.5 Acres"
+  const areaMatch = str.match(/^(-?\d+(?:\.\d+)?)\s*([a-zA-Z]+)?$/);
+  if (areaMatch) {
+    const num = parseFloat(areaMatch[1]);
+    const unit = (areaMatch[2] || '').toLowerCase().replace(/s$/, '');
+    return `${num} ${unit}`.trim();
+  }
+
+  // General text: collapse multiple internal whitespace and lowercase
+  return str.replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Extracts a normalized string value from a field container.
+ */
+function extractFieldValue(container, key) {
+  if (!container) return '';
+  const item = container[key];
+  if (item === null || item === undefined) return '';
+  if (typeof item === 'object') {
+    if (key === 'landArea') {
+      const v = item.value !== undefined && item.value !== null ? String(item.value).trim() : '';
+      const u = item.unit !== undefined && item.unit !== null ? String(item.unit).trim() : '';
+      if (!v && !u) return '';
+      return `${v} ${u}`.trim();
+    }
+    if (item.value !== undefined && item.value !== null) {
+      return String(item.value).trim();
+    }
+    return '';
+  }
+  return String(item).trim();
+}
+
+/**
  * Compares two DocumentVersion snapshots and identifies added, modified, and removed attributes.
  */
 function compareVersions(v1, v2) {
   if (!v1 || !v2) {
-    throw new Error('Two versions are required for comparison.');
+    const err = new Error('Two versions are required for comparison.');
+    err.statusCode = 400;
+    throw err;
   }
 
-  const diffs = [];
+  // Verify versions belong to the same document
+  const docId1 = (v1.documentId?._id || v1.documentId)?.toString();
+  const docId2 = (v2.documentId?._id || v2.documentId)?.toString();
+  if (docId1 && docId2 && docId1 !== docId2) {
+    const err = new Error('Comparison is only permitted between versions of the same document.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // Prevent comparing the same version
+  if (v1.versionNumber !== undefined && v2.versionNumber !== undefined && v1.versionNumber === v2.versionNumber) {
+    const err = new Error('Identical version selection is prohibited. Please select two different versions to compare.');
+    err.statusCode = 400;
+    throw err;
+  }
+
   const s1 = v1.snapshot || {};
   const s2 = v2.snapshot || {};
-
-  // Status comparison
-  if (s1.status !== s2.status) {
-    diffs.push({
-      field: 'status',
-      label: 'Document Status',
-      changeCategory: 'modified',
-      previousValue: s1.status || '(empty)',
-      updatedValue: s2.status || '(empty)'
-    });
-  }
-
-  // File replacement / SHA-256 comparison
-  const h1 = s1.fileMetadata?.sha256Hash || v1.sha256Hash;
-  const h2 = s2.fileMetadata?.sha256Hash || v2.sha256Hash;
-  if (h1 && h2 && h1 !== h2) {
-    diffs.push({
-      field: 'fileMetadata.sha256Hash',
-      label: 'File Cryptographic Hash (SHA-256)',
-      changeCategory: 'modified',
-      previousValue: `${s1.fileMetadata?.originalFilename || 'File'} [${h1}]`,
-      updatedValue: `${s2.fileMetadata?.originalFilename || 'File'} [${h2}]`
-    });
-  }
-
-  // Review remarks
-  const r1 = (s1.reviewRemarks || '').trim();
-  const r2 = (s2.reviewRemarks || '').trim();
-  if (r1 !== r2) {
-    diffs.push({
-      field: 'reviewRemarks',
-      label: 'Review Remarks',
-      changeCategory: !r1 ? 'added' : !r2 ? 'removed' : 'modified',
-      previousValue: r1 || '(empty)',
-      updatedValue: r2 || '(empty)'
-    });
-  }
-
-  // Land details fields
-  const fields = [
-    { key: 'ownerName', label: 'Owner Name' },
-    { key: 'khasraNumber', label: 'Khasra Number' },
-    { key: 'surveyNumber', label: 'Survey Number' },
-    { key: 'khataNumber', label: 'Khata Number' },
-    { key: 'area', label: 'Area' },
-    { key: 'areaUnit', label: 'Area Unit' },
-    { key: 'landArea', label: 'Land Area' },
-    { key: 'village', label: 'Village' },
-    { key: 'tehsil', label: 'Tehsil' },
-    { key: 'district', label: 'District' },
-    { key: 'landClassification', label: 'Land Classification' }
-  ];
-
   const ld1 = s1.landDetails || {};
   const ld2 = s2.landDetails || {};
 
-  for (const { key, label } of fields) {
-    let val1 = '';
-    let val2 = '';
+  const fields = [
+    { key: 'ownerName', field: 'landDetails.ownerName', label: 'Owner Name' },
+    { key: 'surveyNumber', field: 'landDetails.surveyNumber', label: 'Survey Number' },
+    { key: 'khasraNumber', field: 'landDetails.khasraNumber', label: 'Khasra Number' },
+    { key: 'khataNumber', field: 'landDetails.khataNumber', label: 'Khata Number' },
+    { key: 'landArea', field: 'landDetails.landArea', label: 'Land Area' },
+    { key: 'area', field: 'landDetails.area', label: 'Area' },
+    { key: 'areaUnit', field: 'landDetails.areaUnit', label: 'Area Unit' },
+    { key: 'village', field: 'landDetails.village', label: 'Village' },
+    { key: 'tehsil', field: 'landDetails.tehsil', label: 'Tehsil' },
+    { key: 'district', field: 'landDetails.district', label: 'District' },
+    { key: 'landClassification', field: 'landDetails.landClassification', label: 'Land Classification' }
+  ];
 
-    if (key === 'landArea') {
-      const a1 = ld1.landArea || {};
-      const a2 = ld2.landArea || {};
-      val1 = `${a1.value || ''} ${a1.unit || ''}`.trim();
-      val2 = `${a2.value || ''} ${a2.unit || ''}`.trim();
-    } else {
-      val1 = (typeof ld1[key]?.value === 'string' ? ld1[key].value : (typeof ld1[key] === 'string' ? ld1[key] : '')).trim();
-      val2 = (typeof ld2[key]?.value === 'string' ? ld2[key].value : (typeof ld2[key] === 'string' ? ld2[key] : '')).trim();
+  const allFields = [];
+  const differences = [];
+
+  for (const item of fields) {
+    const key = item.key;
+    const fieldPath = item.field;
+    const label = item.label;
+
+    const raw1 = extractFieldValue(ld1, key);
+    const raw2 = extractFieldValue(ld2, key);
+
+    const norm1 = normalizeComparisonValue(raw1);
+    const norm2 = normalizeComparisonValue(raw2);
+
+    let category = 'unchanged';
+    let status = 'Unchanged';
+
+    if (!norm1 && norm2) {
+      category = 'added';
+      status = 'Added';
+    } else if (norm1 && !norm2) {
+      category = 'removed';
+      status = 'Removed';
+    } else if (norm1 && norm2 && norm1 !== norm2) {
+      category = 'modified';
+      status = 'Modified';
     }
 
-    if (val1 !== val2) {
-      let category = 'modified';
-      if (!val1 && val2) category = 'added';
-      else if (val1 && !val2) category = 'removed';
+    const fieldDiff = {
+      field: fieldPath,
+      label,
+      changeCategory: category,
+      status,
+      previousValue: raw1 || '(empty)',
+      updatedValue: raw2 || '(empty)'
+    };
 
-      diffs.push({
-        field: `landDetails.${key}`,
-        label,
-        changeCategory: category,
-        previousValue: val1 || '(empty)',
-        updatedValue: val2 || '(empty)'
-      });
+    allFields.push(fieldDiff);
+    if (category !== 'unchanged') {
+      differences.push(fieldDiff);
     }
   }
+
+  // Compare Status
+  const st1 = (s1.status || '').trim();
+  const st2 = (s2.status || '').trim();
+  const normSt1 = normalizeComparisonValue(st1);
+  const normSt2 = normalizeComparisonValue(st2);
+  let statusCat = 'unchanged';
+  let statusStatus = 'Unchanged';
+  if (!normSt1 && normSt2) {
+    statusCat = 'added';
+    statusStatus = 'Added';
+  } else if (normSt1 && !normSt2) {
+    statusCat = 'removed';
+    statusStatus = 'Removed';
+  } else if (normSt1 !== normSt2) {
+    statusCat = 'modified';
+    statusStatus = 'Modified';
+  }
+  const statusDiff = {
+    field: 'status',
+    label: 'Document Status',
+    changeCategory: statusCat,
+    status: statusStatus,
+    previousValue: st1 || '(empty)',
+    updatedValue: st2 || '(empty)'
+  };
+  allFields.push(statusDiff);
+  if (statusCat !== 'unchanged') {
+    differences.push(statusDiff);
+  }
+
+  // Compare Cryptographic Hash (SHA-256)
+  const h1 = (s1.fileMetadata?.sha256Hash || v1.sha256Hash || '').trim();
+  const h2 = (s2.fileMetadata?.sha256Hash || v2.sha256Hash || '').trim();
+  let hashCat = 'unchanged';
+  let hashStatus = 'Unchanged';
+  if (!h1 && h2) {
+    hashCat = 'added';
+    hashStatus = 'Added';
+  } else if (h1 && !h2) {
+    hashCat = 'removed';
+    hashStatus = 'Removed';
+  } else if (h1 && h2 && h1 !== h2) {
+    hashCat = 'modified';
+    hashStatus = 'Modified';
+  }
+  const hashDiff = {
+    field: 'fileMetadata.sha256Hash',
+    label: 'File Cryptographic Hash (SHA-256)',
+    changeCategory: hashCat,
+    status: hashStatus,
+    previousValue: h1 ? (s1.fileMetadata?.originalFilename ? `${s1.fileMetadata.originalFilename} [${h1}]` : h1) : '(empty)',
+    updatedValue: h2 ? (s2.fileMetadata?.originalFilename ? `${s2.fileMetadata.originalFilename} [${h2}]` : h2) : '(empty)'
+  };
+  allFields.push(hashDiff);
+  if (hashCat !== 'unchanged') {
+    differences.push(hashDiff);
+  }
+
+  // Compare Review Remarks
+  const r1 = (s1.reviewRemarks || '').trim();
+  const r2 = (s2.reviewRemarks || '').trim();
+  let remCat = 'unchanged';
+  let remStatus = 'Unchanged';
+  if (!r1 && r2) {
+    remCat = 'added';
+    remStatus = 'Added';
+  } else if (r1 && !r2) {
+    remCat = 'removed';
+    remStatus = 'Removed';
+  } else if (r1 && r2 && r1 !== r2) {
+    remCat = 'modified';
+    remStatus = 'Modified';
+  }
+  const remDiff = {
+    field: 'reviewRemarks',
+    label: 'Review Remarks',
+    changeCategory: remCat,
+    status: remStatus,
+    previousValue: r1 || '(empty)',
+    updatedValue: r2 || '(empty)'
+  };
+  allFields.push(remDiff);
+  if (remCat !== 'unchanged') {
+    differences.push(remDiff);
+  }
+
+  // Summary counts
+  const summary = {
+    totalFields: allFields.length,
+    changedFields: differences.length,
+    unchangedFields: allFields.filter(f => f.changeCategory === 'unchanged').length,
+    addedCount: allFields.filter(f => f.changeCategory === 'added').length,
+    modifiedCount: allFields.filter(f => f.changeCategory === 'modified').length,
+    removedCount: allFields.filter(f => f.changeCategory === 'removed').length
+  };
 
   return {
     fromVersion: {
@@ -352,7 +487,9 @@ function compareVersions(v1, v2) {
       changeReason: v2.changeReason,
       sha256Hash: v2.sha256Hash
     },
-    differences: diffs
+    differences,
+    allFields,
+    summary
   };
 }
 

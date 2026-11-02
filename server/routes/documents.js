@@ -1088,7 +1088,7 @@ router.get('/:id/versions', async (req, res) => {
  * Compares two historical versions of a document.
  * Query params: ?from=1&to=2
  * Displays previous value, updated value, changed field, version numbers, modification date, user responsible.
- * Highlights added, modified, and removed values.
+ * Highlights added, modified, removed, and unchanged values with summary statistics.
  */
 router.get('/:id/versions/compare', async (req, res) => {
   const { id } = req.params;
@@ -1101,6 +1101,10 @@ router.get('/:id/versions/compare', async (req, res) => {
 
   if (isNaN(fromNum) || isNaN(toNum) || fromNum < 1 || toNum < 1) {
     return res.status(400).json({ error: "Both 'from' and 'to' version numbers are required and must be positive integers." });
+  }
+
+  if (fromNum === toNum) {
+    return res.status(400).json({ error: 'Identical version selection is prohibited. Please select two different versions to compare.' });
   }
 
   try {
@@ -1122,13 +1126,34 @@ router.get('/:id/versions/compare', async (req, res) => {
 
     const comparison = compareVersions(v1, v2);
 
+    // Record audit event for version comparison (strictly read-only)
+    await recordAuditEvent({
+      actorId: req.user._id,
+      action: 'DOCUMENT_VERSIONS_COMPARED',
+      resourceType: 'DOCUMENT',
+      resourceId: document._id.toString(),
+      documentId: document._id,
+      description: `Compared version ${fromNum} with version ${toNum} of document '${document.fileMetadata?.originalFilename || id}'.`,
+      outcome: 'SUCCESS',
+      metadata: {
+        documentId: document._id.toString(),
+        fromVersion: fromNum,
+        toVersion: toNum,
+        changedFieldsCount: comparison.summary?.changedFields ?? comparison.differences?.length ?? 0,
+        unchangedFieldsCount: comparison.summary?.unchangedFields ?? 0,
+        role: req.user.role
+      }
+    });
+
     return res.json({
       documentId: document._id,
+      documentReference: document.fileMetadata?.originalFilename || document._id.toString(),
       ...comparison
     });
   } catch (err) {
-    return res.status(500).json({
-      error: 'Failed to compare document versions.',
+    const statusCode = err.statusCode || 500;
+    return res.status(statusCode).json({
+      error: err.message || 'Failed to compare document versions.',
       details: err.message
     });
   }
