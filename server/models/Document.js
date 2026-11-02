@@ -22,11 +22,23 @@ const DocumentSchema = new mongoose.Schema({
     mimeType: { type: String, required: true },
     sizeBytes: { type: Number, required: true },
     sha256Hash: { type: String, required: true, index: true },
+    hashAlgorithm: { type: String, enum: ['SHA-256'], default: 'SHA-256' },
     storagePath: { type: String, required: true } // Internal server path, hidden in toJSON
+  },
+  ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  assignedOfficerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+  integrityVerification: {
+    status: {
+      type: String,
+      enum: ['INTEGRITY_VERIFIED', 'INTEGRITY_FAILED', 'HASH_UNAVAILABLE'],
+      default: null
+    },
+    calculatedHash: { type: String, default: null },
+    verifiedAt: { type: Date, default: null }
   },
   status: {
     type: String,
-    enum: ['Uploaded', 'Processing', 'Needs review', 'Verified'],
+    enum: ['Uploaded', 'Processing', 'Needs review', 'Verified', 'Rejected'],
     default: 'Uploaded',
     index: true
   },
@@ -36,9 +48,69 @@ const DocumentSchema = new mongoose.Schema({
     engine: { type: String, default: null }, // e.g. 'Google Gemini', 'EasyOCR'
     model: { type: String, default: null },  // e.g. 'gemini-3.5-flash-lite'
     pageCount: { type: Number, default: 1 },
+    meanConfidence: { type: Number, default: null }, // overall OCR confidence from local processing, if available
     processedAt: { type: Date, default: null },
     processingTimeMs: { type: Number, default: null },
     error: { type: String, default: null }
+  },
+  extractionValidation: {
+    score: { type: Number, default: null },
+    weights: {
+      requiredFields: { type: Number, default: 25 },
+      formats: { type: Number, default: 25 },
+      ocrSupport: { type: Number, default: 30 },
+      consistency: { type: Number, default: 20 }
+    },
+    categories: { type: mongoose.Schema.Types.Mixed, default: null },
+    failedChecks: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    reviewReasons: { type: [String], default: [] },
+    disclaimer: { type: String, default: null },
+    calculatedAt: { type: Date, default: null }
+  },
+  accessControl: {
+    uploadedBy: { type: String, default: null },
+    isPrivate: { type: Boolean, default: false }
+  },
+  assignedOfficer: { type: String, default: null, index: true },
+  duplicateDetection: {
+    hasPotentialDuplicates: { type: Boolean, default: false },
+    duplicateCount: { type: Number, default: 0 },
+    matches: [{
+      targetDocumentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Document' },
+      targetFilename: { type: String, default: '' },
+      matchType: { type: String, enum: ['EXACT_DUPLICATE', 'POSSIBLE_DUPLICATE'] },
+      matchedFields: [{ type: String }],
+      explanation: { type: String },
+      detectedAt: { type: Date, default: Date.now }
+    }],
+    lastAnalyzedAt: { type: Date, default: null }
+  },
+  conflictDetection: {
+    hasConflicts: { type: Boolean, default: false },
+    conflictCount: { type: Number, default: 0 },
+    conflicts: [{
+      targetDocumentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Document' },
+      targetFilename: { type: String, default: '' },
+      sharedIdentifiers: [{
+        field: { type: String },
+        value: { type: String }
+      }],
+      conflictingFields: [{
+        field: { type: String },
+        label: { type: String },
+        currentValue: { type: String },
+        targetValue: { type: String },
+        reason: { type: String }
+      }],
+      explanation: { type: String },
+      severity: { type: String, enum: ['WARNING', 'INFO'], default: 'WARNING' },
+      detectedAt: { type: Date, default: Date.now }
+    }],
+    disclaimer: {
+      type: String,
+      default: 'Cross-record conflicts indicate potential data variances or historical transactions requiring human review. They do not constitute proof of fraud or document invalidity.'
+    },
+    lastAnalyzedAt: { type: Date, default: null }
   },
   landDetails: {
     ownerName: { type: ExtractedFieldSchema, default: () => ({}) },
@@ -65,7 +137,10 @@ const DocumentSchema = new mongoose.Schema({
     tehsil: { type: ExtractedFieldSchema, default: () => ({}) },
     district: { type: ExtractedFieldSchema, default: () => ({}) },
     landClassification: { type: ExtractedFieldSchema, default: () => ({}) }
-  }
+  },
+  reviewRemarks: { type: String, default: '', maxlength: 2000 },
+  reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  reviewedAt: { type: Date, default: null }
 }, { 
   timestamps: true,
   toJSON: {
@@ -78,5 +153,10 @@ const DocumentSchema = new mongoose.Schema({
     }
   }
 });
+
+// Indexes for optimized duplicate and cross-record queries
+DocumentSchema.index({ 'landDetails.khasraNumber.value': 1, 'landDetails.district.value': 1 });
+DocumentSchema.index({ 'landDetails.surveyNumber.value': 1, 'landDetails.district.value': 1 });
+DocumentSchema.index({ 'landDetails.khataNumber.value': 1, 'landDetails.district.value': 1 });
 
 module.exports = mongoose.model('Document', DocumentSchema);

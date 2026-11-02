@@ -1,11 +1,18 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { TEST_API_ORIGIN } = require('./test_helpers/config');
+const Document = require('./models/Document');
+const { uploadDir } = require('./middleware/upload');
+const { installTestIdentity } = require('./test_helpers/auth');
 
-const BASE_URL = 'http://localhost:5000';
+const BASE_URL = TEST_API_ORIGIN;
 const FIXTURES_DIR = path.resolve(__dirname, 'test_fixtures');
 
 async function runGeminiLiveTest() {
+  const restoreTestIdentity = await installTestIdentity('Admin');
+  let uploadedDoc = null;
+  try {
   console.log('====================================================');
   console.log('   DigiBhoomi Live Gemini Extraction Verification');
   console.log('====================================================\n');
@@ -27,7 +34,7 @@ async function runGeminiLiveTest() {
     throw new Error(`Upload failed with status ${uploadRes.status}`);
   }
 
-  const uploadedDoc = await uploadRes.json();
+  uploadedDoc = await uploadRes.json();
   console.log(`   -> Uploaded Doc ID: ${uploadedDoc._id}`);
   console.log(`   -> Initial Status: ${uploadedDoc.status}\n`);
 
@@ -94,6 +101,17 @@ async function runGeminiLiveTest() {
   console.log(`[${statusIsNeedsReview ? 'PASS' : 'FAIL'}] Final Status Set to 'Needs review'`);
   console.log(`[${persistsInDb ? 'PASS' : 'FAIL'}] Results Persist in MongoDB`);
   console.log('====================================================\n');
+  } finally {
+    if (uploadedDoc?._id) {
+      const document = await Document.findById(uploadedDoc._id).select('fileMetadata.storedFilename');
+      await Document.deleteOne({ _id: uploadedDoc._id });
+      if (document?.fileMetadata?.storedFilename) {
+        const filePath = path.resolve(uploadDir, path.basename(document.fileMetadata.storedFilename));
+        if (filePath.startsWith(`${uploadDir}${path.sep}`)) await fs.promises.unlink(filePath).catch(() => {});
+      }
+    }
+    await restoreTestIdentity();
+  }
 }
 
 runGeminiLiveTest().catch(console.error);

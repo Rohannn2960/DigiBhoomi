@@ -1,8 +1,16 @@
 const fs = require('fs');
 const path = require('path');
+const { TEST_API_BASE_URL } = require('./test_helpers/config');
+const Document = require('./models/Document');
+const { uploadDir } = require('./middleware/upload');
+const { installTestIdentity } = require('./test_helpers/auth');
 
 async function runTests() {
-  const baseUrl = 'http://localhost:5000/api';
+  const restoreTestIdentity = await installTestIdentity('Admin');
+  const createdDocumentIds = new Set();
+  const createdStoredFilenames = new Set();
+  try {
+  const baseUrl = TEST_API_BASE_URL;
   console.log('--- Starting DigiBhoomi Phase 2 Automated API Acceptance Tests ---\n');
 
   let pdfRecordId = null;
@@ -18,6 +26,8 @@ async function runTests() {
     console.log(`[Test 2 & 6 & 7] Upload Valid PDF: Status ${res.status} | SHA-256: ${data.fileMetadata?.sha256Hash?.substring(0, 16)}... | Status: ${data.status}`);
     if (res.status === 201 && data._id && data.fileMetadata?.sha256Hash) {
       pdfRecordId = data._id;
+      createdDocumentIds.add(data._id);
+      createdStoredFilenames.add(data.fileMetadata.storedFilename);
       console.log('  ✓ Pass: Valid PDF uploaded, hashed, and persisted to MongoDB.');
     } else {
       console.error('  ✗ Fail:', data);
@@ -36,6 +46,8 @@ async function runTests() {
     const data = await res.json();
     console.log(`[Test 3] Upload Valid PNG: Status ${res.status}`);
     if (res.status === 201 && data._id) {
+      createdDocumentIds.add(data._id);
+      createdStoredFilenames.add(data.fileMetadata.storedFilename);
       console.log('  ✓ Pass: Valid PNG uploaded successfully.');
     } else {
       console.error('  ✗ Fail:', data);
@@ -151,6 +163,21 @@ async function runTests() {
   }
 
   console.log('\n--- All Automated Backend Tests Completed ---');
+  } finally {
+    if (createdDocumentIds.size) {
+      await Document.deleteMany({ _id: { $in: Array.from(createdDocumentIds) } });
+    }
+    for (const filename of createdStoredFilenames) {
+      const filePath = path.resolve(uploadDir, path.basename(filename));
+      if (filePath.startsWith(`${uploadDir}${path.sep}`)) {
+        await fs.promises.unlink(filePath).catch(() => {});
+      }
+    }
+    await restoreTestIdentity();
+  }
 }
 
-runTests();
+runTests().catch(error => {
+  console.error('API tests failed:', error);
+  process.exitCode = 1;
+});

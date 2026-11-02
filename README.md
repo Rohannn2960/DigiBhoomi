@@ -50,6 +50,14 @@ GEMINI_MODEL=gemini-3.5-flash-lite
 
 > **Note:** The Gemini API key is read strictly on the server side and is never exposed to the React frontend or API responses.
 
+### Role-Based Access Control
+
+Copy `server/.env.example` to `server/.env` and set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` to credentials you control. The password must be at least 12 characters. The first server startup creates that Admin account only if the email does not already exist; there are no default credentials. Citizen accounts register through the sign-in page. Admins can promote Citizens to Officers or Admins and assign documents to individual Officers. Officers see only documents assigned to them; Citizens see only documents they uploaded. Existing records without an owner are available only to Admins until assigned.
+
+Session cookies are HTTP-only and same-site strict. Cookies use the `Secure` attribute automatically in production; serve production traffic over HTTPS. For local HTTP development, leave `COOKIE_SECURE=false`.
+
+Unsafe API requests validate their `Origin` against `CLIENT_ORIGINS` (and reject cross-site Fetch Metadata when no Origin is supplied). Login is limited to 30 attempts per client IP per 15 minutes; registration is limited to 10 per client IP per hour. These throttles are in-memory and per process, so production multi-instance deployments need a shared rate-limit store and correctly configured trusted-proxy settings.
+
 ---
 
 ### 3. Install Dependencies
@@ -108,6 +116,14 @@ npm run dev
 | `GET` | `/api/documents/:id` | Retrieve single document metadata, OCR raw text, and extracted structured land fields. |
 | `GET` | `/api/documents/:id/file` | Securely streams stored document for inline browser preview (PDF/image). |
 | `POST` | `/api/documents/:id/process` | Triggers document understanding and field extraction (`engine`: `gemini` or `local`, `language`: `auto`, `hi`, `te`, `en`, `mr`, `ta`). Transitions status to `Needs review`. |
+| `PATCH` | `/api/documents/:id/review` | Assigned Officer/Admin saves corrections or approves/rejects a document awaiting review. |
+| `PATCH` | `/api/documents/:id/assignment` | Admin assigns a document to an active Officer or clears its assignment. |
+| `GET` | `/api/documents/:id/integrity` | Authenticated owner, assigned Officer, or Admin verifies stored-file SHA-256 integrity. |
+| `POST` | `/api/auth/register` | Registers and signs in a Citizen; requested role values are ignored. |
+| `POST` / `GET` | `/api/auth/login`, `/api/auth/me` | Creates an HTTP-only session or returns the authenticated user. |
+| `GET` | `/api/users` | Admin-only user and role list. |
+| `PATCH` | `/api/users/:id/role` | Admin-only role assignment (`Citizen`, `Officer`, `Admin`). |
+| `GET` | `/api/audit` | Admin-only persistent audit history. |
 | `GET` | `/api/health` | Backend and MongoDB connection health check. |
 | `GET` | `http://127.0.0.1:8000/health` | Python microservice health and engine status check. |
 
@@ -115,10 +131,29 @@ npm run dev
 
 ## 🧪 Automated Acceptance Tests
 
-To run the complete automated Phase 3 acceptance test suite:
+The integration tests are isolated from the normal application database. They refuse a database name that does not end in `_test`, use `digibhoomi_rbac_test` by default, and store uploads in `server/uploads_rbac_test`. Start a separate test backend in its own PowerShell terminal:
+
 ```powershell
-node server/test_phase3_acceptance.js
+cd server
+$env:PORT = '5001'
+$env:MONGODB_URI = 'mongodb://127.0.0.1:27017/digibhoomi_rbac_test'
+$env:UPLOAD_DIR = 'uploads_rbac_test'
+$env:BOOTSTRAP_ADMIN_EMAIL = ''
+$env:BOOTSTRAP_ADMIN_PASSWORD = ''
+npm start
 ```
+
+Do not point test variables at a production or normal development database. In another terminal, run:
+
+```powershell
+cd server
+node test_rbac.js
+node test_integrity.js
+node test_api.js
+node test_phase3_acceptance.js
+```
+
+The Phase 3 suite uses the local Python service on port `8000`. `test_gemini_live.js` additionally requires a valid Gemini API key and makes live external API calls.
 
 ---
 

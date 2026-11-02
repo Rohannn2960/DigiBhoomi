@@ -5,9 +5,12 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node test_validation.js && node test_detection.js && node test_detection_api.js && node test_audit.js && node test_semantic_search.js && node test_integrity.js",
+    "test:rbac": "node test_rbac.js && node test_search_rbac_api.js && node test_rbac_regression.js"
   },
   "dependencies": {
+    "@xenova/transformers": "^2.17.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

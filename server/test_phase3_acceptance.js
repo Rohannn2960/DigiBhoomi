@@ -2,14 +2,18 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
+const { TEST_API_ORIGIN, TEST_MONGODB_URI } = require('./test_helpers/config');
+const { uploadDir } = require('./middleware/upload');
+const { installTestIdentity } = require('./test_helpers/auth');
 
-const BASE_URL = 'http://localhost:5000';
+const BASE_URL = TEST_API_ORIGIN;
 const PYTHON_URL = 'http://127.0.0.1:8000';
 const FIXTURES_DIR = path.resolve(__dirname, 'test_fixtures');
-const UPLOADS_DIR = path.resolve(__dirname, 'uploads');
+const UPLOADS_DIR = uploadDir;
 const EXPECTED_GEMINI_MODEL = 'gemini-3.5-flash-lite';
 const createdDocumentIds = new Set();
 const createdStoredFilenames = new Set();
+let restoreTestIdentity = null;
 
 async function cleanupCreatedResources() {
   const Document = require('./models/Document');
@@ -49,9 +53,17 @@ async function runTests() {
   };
 
   try {
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/digibhoomi');
+    await mongoose.connect(TEST_MONGODB_URI);
   } catch {
     assert('MongoDB is available for acceptance testing', false, 'Connection failed.');
+    printSummary(results);
+    return;
+  }
+
+  try {
+    restoreTestIdentity = await installTestIdentity('Admin');
+  } catch (err) {
+    assert('Authenticated test identity is available', false, err.message);
     printSummary(results);
     return;
   }
@@ -183,10 +195,15 @@ async function runTests() {
       ('confidence' in ld.ownerName) &&
       ('confidenceSource' in ld.ownerName);
 
+    const hasNumericLocalConfidence =
+      typeof processedDoc.ocrResult?.meanConfidence === 'number' &&
+      typeof ld.ownerName?.confidence === 'number' &&
+      typeof ld.landArea?.confidence === 'number';
+
     assert(
       'Test 6: Extracted fields conform strictly to defined schema',
-      allFieldsPresent && ownerFieldConforms,
-      `[Owner: "${ld.ownerName.value}", Area: "${ld.landArea.value} ${ld.landArea.unit}"]`
+      allFieldsPresent && ownerFieldConforms && hasNumericLocalConfidence,
+      `[Owner: "${ld.ownerName.value}", Area: "${ld.landArea.value} ${ld.landArea.unit}", meanConfidence: ${processedDoc.ocrResult?.meanConfidence}]`
     );
   }
 
@@ -217,11 +234,20 @@ async function runTests() {
         persistedDoc.ocrResult.fullText.length > 0 &&
         persistedDoc.ocrResult.processedAt &&
         persistedDoc.ocrResult.engine;
+      const validationPersisted =
+        typeof persistedDoc.extractionValidation?.score === 'number' &&
+        persistedDoc.extractionValidation?.categories?.requiredFields &&
+        Array.isArray(persistedDoc.extractionValidation?.failedChecks);
 
       assert(
         'Test 8: Raw OCR text and metadata persist in MongoDB',
         Boolean(ocrPersisted),
         `[Length: ${persistedDoc.ocrResult?.fullText?.length} chars, ProcessedAt: ${persistedDoc.ocrResult?.processedAt}]`
+      );
+      assert(
+        'Test 8b: Extraction validation score and review checks persist in MongoDB',
+        Boolean(validationPersisted),
+        `[Score: ${persistedDoc.extractionValidation?.score}, Failed checks: ${persistedDoc.extractionValidation?.failedChecks?.length}]`
       );
     } catch (err) {
       assert('Test 8: MongoDB persistence check', false, err.message);
@@ -348,30 +374,46 @@ async function runTests() {
   }
 
   // Test 11: Failures do not leave records stuck in "Processing"
-  if (uploadedDoc) {
-    try {
-      // Use an invalid engine to trigger a deterministic handled processing error.
-      const invalidEngineRes = await fetch(`${BASE_URL}/api/documents/${uploadedDoc._id}/process`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ engine: 'invalid-test-engine' })
-      });
+  try {
+    // Upload a fresh document in 'Uploaded' state specifically to verify failure recovery and stuck-state reset
+    const failBlob = new Blob([originalBytes], { type: 'image/png' });
+    const failFormData = new FormData();
+    failFormData.append('file', failBlob, 'stuck_state_test.png');
 
-      // Verify the record status in DB
-      const checkRes = await fetch(`${BASE_URL}/api/documents/${uploadedDoc._id}`);
-      const checkDoc = await checkRes.json();
-
-      assert(
-        'Test 11: Invalid processing engine resets document status and records the error',
-        checkDoc.status !== 'Processing' &&
-          invalidEngineRes.status === 502 &&
-          typeof checkDoc.ocrResult?.error === 'string' &&
-          checkDoc.ocrResult.error.includes("Unknown processing engine 'invalid-test-engine'"),
-        `[Status after handled failure: "${checkDoc.status}", Error recorded: "${checkDoc.ocrResult?.error?.substring(0, 40)}..."]`
-      );
-    } catch (err) {
-      assert('Test 11: Stuck state verification', false, err.message);
+    const failUploadRes = await fetch(`${BASE_URL}/api/documents`, {
+      method: 'POST',
+      body: failFormData
+    });
+    const freshDocForFail = await failUploadRes.json();
+    if (failUploadRes.ok && freshDocForFail?._id) {
+      createdDocumentIds.add(freshDocForFail._id);
+      if (freshDocForFail.fileMetadata?.storedFilename) {
+        createdStoredFilenames.add(freshDocForFail.fileMetadata.storedFilename);
+      }
     }
+
+    // Use an invalid engine to trigger a deterministic handled processing error on fresh 'Uploaded' document
+    const invalidEngineRes = await fetch(`${BASE_URL}/api/documents/${freshDocForFail._id}/process`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine: 'invalid-test-engine' })
+    });
+
+    // Verify the record status in DB
+    const checkRes = await fetch(`${BASE_URL}/api/documents/${freshDocForFail._id}`);
+    const checkDoc = await checkRes.json();
+
+    assert(
+      'Test 11: Invalid processing engine resets document status and records the error',
+      checkDoc.status !== 'Processing' &&
+        checkDoc.status === 'Uploaded' &&
+        invalidEngineRes.status === 502 &&
+        typeof checkDoc.ocrResult?.error === 'string' &&
+        checkDoc.ocrResult.error.includes("Unknown processing engine 'invalid-test-engine'"),
+      `[Status after handled failure: "${checkDoc.status}", Error recorded: "${checkDoc.ocrResult?.error?.substring(0, 40)}..."]`
+    );
+  } catch (err) {
+    assert('Test 11: Stuck state verification', false, err.message);
   }
 
   // Test 12: Original uploaded files remain intact
@@ -403,6 +445,12 @@ runTests()
       await cleanupCreatedResources();
     } catch (err) {
       console.error('Acceptance cleanup failed:', err.message);
+      process.exitCode = 1;
+    }
+    try {
+      if (restoreTestIdentity) await restoreTestIdentity();
+    } catch (err) {
+      console.error('Test identity cleanup failed:', err.message);
       process.exitCode = 1;
     }
     try {
