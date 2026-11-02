@@ -8,13 +8,14 @@ import {
   processDocument,
   reviewDocument,
   verifyDocumentIntegrity,
-  updateDocument,
   analyzeDocumentConflicts,
   fetchDocumentAuditHistory
 } from '../services/api';
 import { useAuth } from '../context/auth-context';
 import DocumentViewer from '../components/DocumentViewer';
 import StatusBadge from '../components/StatusBadge';
+import VersionHistoryTab from '../components/VersionHistoryTab';
+import OwnershipHistoryTab from '../components/OwnershipHistoryTab';
 import {
   ArrowLeft,
   Save,
@@ -34,7 +35,8 @@ import {
   History,
   User,
   Clock,
-  ShieldCheck
+  ShieldCheck,
+  Award
 } from 'lucide-react';
 
 const defaultField = {
@@ -105,8 +107,10 @@ export default function ReviewPage() {
   const [isAnalyzingConflicts, setIsAnalyzingConflicts] = useState(false);
   const [conflictActionMessage, setConflictActionMessage] = useState(null);
 
+  // Tab State
+  const [activeTab, setActiveTab] = useState('fields'); // 'fields', 'versions', 'ownership', 'conflicts', 'audit'
+
   // Phase 4 Audit History State
-  const [isSaving, setIsSaving] = useState(false);
   const [auditEvents, setAuditEvents] = useState([]);
   const [isLoadingAudit, setIsLoadingAudit] = useState(false);
   const [auditError, setAuditError] = useState(null);
@@ -185,6 +189,20 @@ export default function ReviewPage() {
 
     return () => { isMounted = false; };
   }, [id]);
+
+  const handleReloadDocument = async () => {
+    try {
+      const doc = await fetchDocumentById(id);
+      if (doc.fileMetadata && !doc.fileMetadata.previewUrl) {
+        doc.fileMetadata.previewUrl = getDocumentFileUrl(doc._id);
+      }
+      setRecord(doc);
+      setFormData(normalizeLandDetails(doc.landDetails));
+      setIntegrityCheck(doc.integrityVerification || null);
+    } catch (e) {
+      console.error('Failed to reload document:', e);
+    }
+  };
 
   useEffect(() => {
     if (user?.role !== 'Admin') return undefined;
@@ -660,23 +678,200 @@ export default function ReviewPage() {
           <DocumentViewer fileMetadata={record.fileMetadata} />
         </div>
 
-        {/* Right Pane: Editable Fields & OCR Text */}
+        {/* Right Pane: Editable Fields, OCR Text, Version History, Ownership History, Conflicts, Audit */}
         <div className="form-pane">
-          <div style={{ padding: '0.85rem 1.25rem', background: '#f8fafc', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <strong style={{ fontSize: '0.95rem' }}>Extracted Land Attributes</strong>
-              {record.ocrResult?.engine && (
-                <div style={{ fontSize: '0.72rem', color: 'var(--primary)', fontWeight: 600 }}>
-                  Extracted via: {record.ocrResult.engine}
-                </div>
+          {/* Sub-navigation Tabs */}
+          <div
+            style={{
+              padding: '0.6rem 1rem',
+              background: '#f8fafc',
+              borderBottom: '1px solid var(--border)',
+              display: 'flex',
+              gap: '6px',
+              overflowX: 'auto',
+              alignItems: 'center'
+            }}
+          >
+            <button
+              onClick={() => setActiveTab('fields')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '0.4rem 0.8rem',
+                fontSize: '0.82rem',
+                fontWeight: 600,
+                borderRadius: 'var(--radius)',
+                border: '1px solid',
+                borderColor: activeTab === 'fields' ? 'var(--primary)' : '#e2e8f0',
+                background: activeTab === 'fields' ? '#ffffff' : '#f8fafc',
+                color: activeTab === 'fields' ? 'var(--primary)' : 'var(--text-muted)',
+                cursor: 'pointer',
+                boxShadow: activeTab === 'fields' ? 'var(--shadow-sm)' : 'none',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              <FileText size={14} />
+              <span>Attributes & Review</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('versions')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '0.4rem 0.8rem',
+                fontSize: '0.82rem',
+                fontWeight: 600,
+                borderRadius: 'var(--radius)',
+                border: '1px solid',
+                borderColor: activeTab === 'versions' ? 'var(--primary)' : '#e2e8f0',
+                background: activeTab === 'versions' ? '#ffffff' : '#f8fafc',
+                color: activeTab === 'versions' ? 'var(--primary)' : 'var(--text-muted)',
+                cursor: 'pointer',
+                boxShadow: activeTab === 'versions' ? 'var(--shadow-sm)' : 'none',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              <History size={14} />
+              <span>Version History</span>
+              {record.currentVersion && (
+                <span
+                  style={{
+                    fontSize: '0.68rem',
+                    background: activeTab === 'versions' ? 'var(--primary-light)' : '#e2e8f0',
+                    color: activeTab === 'versions' ? 'var(--primary)' : '#475569',
+                    padding: '0.1rem 0.4rem',
+                    borderRadius: '4px',
+                    fontWeight: 700
+                  }}
+                >
+                  v{record.currentVersion}
+                </span>
               )}
-            </div>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              Yellow fields flag empty or low-confidence attributes
-            </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('ownership')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '0.4rem 0.8rem',
+                fontSize: '0.82rem',
+                fontWeight: 600,
+                borderRadius: 'var(--radius)',
+                border: '1px solid',
+                borderColor: activeTab === 'ownership' ? 'var(--primary)' : '#e2e8f0',
+                background: activeTab === 'ownership' ? '#ffffff' : '#f8fafc',
+                color: activeTab === 'ownership' ? 'var(--primary)' : 'var(--text-muted)',
+                cursor: 'pointer',
+                boxShadow: activeTab === 'ownership' ? 'var(--shadow-sm)' : 'none',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              <Award size={14} />
+              <span>Ownership History</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('conflicts')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '0.4rem 0.8rem',
+                fontSize: '0.82rem',
+                fontWeight: 600,
+                borderRadius: 'var(--radius)',
+                border: '1px solid',
+                borderColor: activeTab === 'conflicts' ? 'var(--primary)' : '#e2e8f0',
+                background: activeTab === 'conflicts' ? '#ffffff' : '#f8fafc',
+                color: activeTab === 'conflicts' ? 'var(--primary)' : 'var(--text-muted)',
+                cursor: 'pointer',
+                boxShadow: activeTab === 'conflicts' ? 'var(--shadow-sm)' : 'none',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              <GitCompare size={14} />
+              <span>Conflicts</span>
+              {(conflictDetection.conflictCount || 0) > 0 && (
+                <span
+                  style={{
+                    fontSize: '0.68rem',
+                    background: '#fef3c7',
+                    color: '#92400e',
+                    padding: '0.1rem 0.4rem',
+                    borderRadius: '4px',
+                    fontWeight: 700
+                  }}
+                >
+                  {conflictDetection.conflictCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => setActiveTab('audit')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '0.4rem 0.8rem',
+                fontSize: '0.82rem',
+                fontWeight: 600,
+                borderRadius: 'var(--radius)',
+                border: '1px solid',
+                borderColor: activeTab === 'audit' ? 'var(--primary)' : '#e2e8f0',
+                background: activeTab === 'audit' ? '#ffffff' : '#f8fafc',
+                color: activeTab === 'audit' ? 'var(--primary)' : 'var(--text-muted)',
+                cursor: 'pointer',
+                boxShadow: activeTab === 'audit' ? 'var(--shadow-sm)' : 'none',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              <Clock size={14} />
+              <span>Audit Trail</span>
+              {auditEvents.length > 0 && (
+                <span
+                  style={{
+                    fontSize: '0.68rem',
+                    background: activeTab === 'audit' ? 'var(--primary-light)' : '#e2e8f0',
+                    color: activeTab === 'audit' ? 'var(--primary)' : '#475569',
+                    padding: '0.1rem 0.4rem',
+                    borderRadius: '4px',
+                    fontWeight: 700
+                  }}
+                >
+                  {auditEvents.length}
+                </span>
+              )}
+            </button>
           </div>
 
           <div className="form-body">
+            {/* Version History Tab Panel */}
+            {activeTab === 'versions' && (
+              <VersionHistoryTab
+                documentId={record._id}
+                currentVersion={record.currentVersion || 1}
+                canManage={canReview}
+                onVersionUpdated={handleReloadDocument}
+              />
+            )}
+
+            {/* Ownership History Tab Panel */}
+            {activeTab === 'ownership' && (
+              <OwnershipHistoryTab
+                document={record}
+                canTransfer={canReview}
+                onOwnershipTransferred={handleReloadDocument}
+              />
+            )}
+
+            {/* Land Attributes: Confidence and Summary */}
+            {activeTab === 'fields' && (
             <div
               style={{
                 background: '#f8fafc',
@@ -780,8 +975,10 @@ export default function ReviewPage() {
                 </div>
               )}
             </div>
+            )}
 
             {/* Phase 4: Duplicate & Cross-Record Conflict Detection Section */}
+            {activeTab === 'conflicts' && (
             <div
               style={{
                 background: '#f8fafc',
@@ -992,7 +1189,11 @@ export default function ReviewPage() {
                   'Cross-record conflicts indicate potential data variances or historical transactions requiring human review. They do not constitute proof of fraud or document invalidity.'}
               </div>
             </div>
+            )}
 
+            {/* Land Details Form Fields */}
+            {activeTab === 'fields' && (
+              <>
             {/* Raw OCR Text Section (Collapsible) */}
             {record.ocrResult?.fullText && (
               <div
@@ -1241,8 +1442,11 @@ export default function ReviewPage() {
                 placeholder={canEditReview ? 'Add review notes' : 'No review remarks'}
               />
             </div>
+            </>
+            )}
 
             {/* Phase 4: Document Audit History Section */}
+            {activeTab === 'audit' && (
             <div
               style={{
                 background: '#ffffff',
@@ -1467,6 +1671,7 @@ export default function ReviewPage() {
                 </div>
               )}
             </div>
+            )}
           </div>
         </div>
       </div>

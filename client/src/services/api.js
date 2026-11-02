@@ -145,3 +145,39 @@ export async function fetchDocumentAuditHistory(id, { page = 1, limit = 20, sort
   const query = new URLSearchParams({ page: String(page), limit: String(limit), sort }).toString();
   return apiRequest(`/api/documents/${id}/audit?${query}`);
 }
+
+export async function fetchDocumentVersions(id, { sort = 'desc' } = {}) {
+  return apiRequest(`/api/documents/${id}/versions?sort=${sort}`);
+}
+
+export async function fetchDocumentVersion(id, versionNumber) {
+  return apiRequest(`/api/documents/${id}/versions/${versionNumber}`);
+}
+
+export async function compareDocumentVersions(id, fromVersion, toVersion) {
+  return apiRequest(`/api/documents/${id}/versions/compare?from=${fromVersion}&to=${toVersion}`);
+}
+
+export async function replaceDocumentFile(id, file, { changeReason = '' } = {}) {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (changeReason) {
+    formData.append('changeReason', changeReason);
+  }
+  return apiRequest(`/api/documents/${id}/versions/replace-file`, {
+    method: 'POST',
+    body: formData
+  });
+}
+
+export async function fetchOwnershipHistory(id, { sort = 'desc' } = {}) {
+  return apiRequest(`/api/documents/${id}/ownership-history?sort=${sort}`);
+}
+
+export async function transferOwnership(id, transferDetails) {
+  return apiRequest(`/api/documents/${id}/transfer-ownership`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(transferDetails)
+  });
+}
