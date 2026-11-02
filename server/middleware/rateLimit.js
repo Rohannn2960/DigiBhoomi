@@ -1,9 +1,19 @@
 const { recordAuditEvent } = require('../services/audit');
 
+function getEffectiveLimit(envVar, defaultProdLimit, defaultTestLimit = 10000) {
+  if (process.env[envVar] !== undefined && process.env[envVar] !== '') {
+    return parseInt(process.env[envVar], 10);
+  }
+  const isTest = (process.env.NODE_ENV || '').toLowerCase() === 'test' ||
+    process.env.RATE_LIMIT_TEST_MODE === 'true';
+  return isTest ? defaultTestLimit : defaultProdLimit;
+}
+
 function createRateLimiter({ limit, windowMs, action, audit = recordAuditEvent }) {
   const clients = new Map();
 
   return function rateLimit(request, response, next) {
+    const maxLimit = typeof limit === 'function' ? limit() : limit;
     const now = Date.now();
     const key = request.ip || request.socket.remoteAddress || 'unknown';
     let entry = clients.get(key);
@@ -12,14 +22,14 @@ function createRateLimiter({ limit, windowMs, action, audit = recordAuditEvent }
       clients.set(key, entry);
     }
 
-    if (entry.count >= limit) {
+    if (entry.count >= maxLimit) {
       if (!entry.auditRecorded) {
         entry.auditRecorded = true;
         audit({
           action: `${action}_RATE_LIMITED`,
           resourceType: 'AUTHENTICATION',
           outcome: 'DENIED',
-          metadata: { windowMs, limit }
+          metadata: { windowMs, limit: maxLimit }
         }).catch(error => console.error('[Audit persistence error]', error.message));
       }
       response.set('Retry-After', String(Math.max(1, Math.ceil((entry.expiresAt - now) / 1000))));
@@ -37,13 +47,13 @@ function createRateLimiter({ limit, windowMs, action, audit = recordAuditEvent }
 }
 
 const loginRateLimit = createRateLimiter({
-  limit: parseInt(process.env.LOGIN_RATE_LIMIT || '30', 10),
+  limit: () => getEffectiveLimit('LOGIN_RATE_LIMIT', 30, 10000),
   windowMs: 15 * 60 * 1000,
   action: 'LOGIN'
 });
 
 const registrationRateLimit = createRateLimiter({
-  limit: parseInt(process.env.REGISTRATION_RATE_LIMIT || '10', 10),
+  limit: () => getEffectiveLimit('REGISTRATION_RATE_LIMIT', 10, 10000),
   windowMs: 60 * 60 * 1000,
   action: 'REGISTRATION'
 });

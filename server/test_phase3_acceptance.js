@@ -374,30 +374,46 @@ async function runTests() {
   }
 
   // Test 11: Failures do not leave records stuck in "Processing"
-  if (uploadedDoc) {
-    try {
-      // Use an invalid engine to trigger a deterministic handled processing error.
-      const invalidEngineRes = await fetch(`${BASE_URL}/api/documents/${uploadedDoc._id}/process`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ engine: 'invalid-test-engine' })
-      });
+  try {
+    // Upload a fresh document in 'Uploaded' state specifically to verify failure recovery and stuck-state reset
+    const failBlob = new Blob([originalBytes], { type: 'image/png' });
+    const failFormData = new FormData();
+    failFormData.append('file', failBlob, 'stuck_state_test.png');
 
-      // Verify the record status in DB
-      const checkRes = await fetch(`${BASE_URL}/api/documents/${uploadedDoc._id}`);
-      const checkDoc = await checkRes.json();
-
-      assert(
-        'Test 11: Invalid processing engine resets document status and records the error',
-        checkDoc.status !== 'Processing' &&
-          invalidEngineRes.status === 502 &&
-          typeof checkDoc.ocrResult?.error === 'string' &&
-          checkDoc.ocrResult.error.includes("Unknown processing engine 'invalid-test-engine'"),
-        `[Status after handled failure: "${checkDoc.status}", Error recorded: "${checkDoc.ocrResult?.error?.substring(0, 40)}..."]`
-      );
-    } catch (err) {
-      assert('Test 11: Stuck state verification', false, err.message);
+    const failUploadRes = await fetch(`${BASE_URL}/api/documents`, {
+      method: 'POST',
+      body: failFormData
+    });
+    const freshDocForFail = await failUploadRes.json();
+    if (failUploadRes.ok && freshDocForFail?._id) {
+      createdDocumentIds.add(freshDocForFail._id);
+      if (freshDocForFail.fileMetadata?.storedFilename) {
+        createdStoredFilenames.add(freshDocForFail.fileMetadata.storedFilename);
+      }
     }
+
+    // Use an invalid engine to trigger a deterministic handled processing error on fresh 'Uploaded' document
+    const invalidEngineRes = await fetch(`${BASE_URL}/api/documents/${freshDocForFail._id}/process`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine: 'invalid-test-engine' })
+    });
+
+    // Verify the record status in DB
+    const checkRes = await fetch(`${BASE_URL}/api/documents/${freshDocForFail._id}`);
+    const checkDoc = await checkRes.json();
+
+    assert(
+      'Test 11: Invalid processing engine resets document status and records the error',
+      checkDoc.status !== 'Processing' &&
+        checkDoc.status === 'Uploaded' &&
+        invalidEngineRes.status === 502 &&
+        typeof checkDoc.ocrResult?.error === 'string' &&
+        checkDoc.ocrResult.error.includes("Unknown processing engine 'invalid-test-engine'"),
+      `[Status after handled failure: "${checkDoc.status}", Error recorded: "${checkDoc.ocrResult?.error?.substring(0, 40)}..."]`
+    );
+  } catch (err) {
+    assert('Test 11: Stuck state verification', false, err.message);
   }
 
   // Test 12: Original uploaded files remain intact

@@ -703,7 +703,12 @@ async function runTests() {
     // Test 21: Officer assignment restrictions & Admin global access
     // ----------------------------------------------------
     console.log('Test 21: Officer assignment restrictions and Admin global access');
-    // docAssigned is assigned to officer-1
+    const officer1Id = new mongoose.Types.ObjectId();
+    const officer2Id = new mongoose.Types.ObjectId();
+    const citizenOwnerId = new mongoose.Types.ObjectId();
+    const otherCitizenId = new mongoose.Types.ObjectId();
+
+    // docAssigned is assigned to officer1Id via authoritative assignedOfficerId
     const docAssigned = new Document({
       fileMetadata: {
         originalFilename: '__test_sem_assigned_doc.pdf',
@@ -714,8 +719,9 @@ async function runTests() {
         storagePath: 'dummy/path/assigned.pdf'
       },
       status: 'Needs review',
-      accessControl: { uploadedBy: null, isPrivate: false },
-      assignedOfficer: 'officer-1',
+      ownerId: citizenOwnerId,
+      assignedOfficerId: officer1Id,
+      accessControl: { uploadedBy: citizenOwnerId.toString(), isPrivate: true },
       landDetails: {
         ownerName: { value: 'Assigned Parcel Officer Review' },
         village: { value: 'Shamshabad' }
@@ -728,30 +734,39 @@ async function runTests() {
     // Officer-2 searches (not assigned to this document)
     const officer2Search = await searchSemantic({
       query: 'Assigned Parcel Officer Review',
-      actor: { userId: 'officer-2', role: 'officer' }
+      actor: { _id: officer2Id, userId: officer2Id.toString(), role: 'Officer' }
     });
     const officer2Found = officer2Search.results.some(r => r.documentId.toString() === docAssigned._id.toString());
-    assert(!officer2Found, 'Officer-2 must NOT see document assigned to Officer-1');
+    assert(!officer2Found, 'Unassigned Officer-2 must NOT see document assigned to Officer-1');
 
-    // Officer-1 searches (assigned)
+    // Officer-1 searches (assigned via authoritative assignedOfficerId)
     const officer1Search = await searchSemantic({
       query: 'Assigned Parcel Officer Review',
-      actor: { userId: 'officer-1', role: 'officer' }
+      actor: { _id: officer1Id, userId: officer1Id.toString(), role: 'Officer' }
     });
     const officer1Found = officer1Search.results.some(r => r.documentId.toString() === docAssigned._id.toString());
-    assert(officer1Found, 'Assigned Officer-1 MUST see document');
+    assert(officer1Found, 'Assigned Officer-1 MUST see document matching assignedOfficerId');
 
-    // Officer with assignedDocuments whitelist
-    const officerWhitelistSearch = await searchSemantic({
+    // Citizen owner searches (owns the document)
+    const test21OwnerSearch = await searchSemantic({
       query: 'Assigned Parcel Officer Review',
-      actor: { userId: 'officer-99', role: 'officer', assignedDocuments: [docAssigned._id.toString()] }
+      actor: { _id: citizenOwnerId, userId: citizenOwnerId.toString(), role: 'Citizen' }
     });
-    assert(officerWhitelistSearch.results.some(r => r.documentId.toString() === docAssigned._id.toString()), 'Officer with document in whitelist MUST have access');
+    const ownerFound = test21OwnerSearch.results.some(r => r.documentId.toString() === docAssigned._id.toString());
+    assert(ownerFound, 'Citizen owner MUST see their own document');
+
+    // Unrelated citizen searches (does not own the document)
+    const unrelatedSearch = await searchSemantic({
+      query: 'Assigned Parcel Officer Review',
+      actor: { _id: otherCitizenId, userId: otherCitizenId.toString(), role: 'Citizen' }
+    });
+    const unrelatedFound = unrelatedSearch.results.some(r => r.documentId.toString() === docAssigned._id.toString());
+    assert(!unrelatedFound, 'Unrelated Citizen must NOT see another user document');
 
     // Admin searches (global access)
     const adminSearch = await searchSemantic({
       query: 'Assigned Parcel Officer Review',
-      actor: { userId: 'admin-super', role: 'admin' }
+      actor: { _id: new mongoose.Types.ObjectId(), role: 'Admin' }
     });
     assert(adminSearch.results.some(r => r.documentId.toString() === docAssigned._id.toString()), 'Admin MUST have global visibility across assigned records');
     console.log('  ✓ Pass: Officer assignment restrictions and Admin global visibility verified.\n');
