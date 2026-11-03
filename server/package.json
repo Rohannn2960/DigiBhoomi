@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test_validation.js && node test_detection.js && node test_detection_api.js && node test_audit.js && node test_semantic_search.js && node test_integrity.js",
+    "test": "node test_validation.js && node test_detection.js && node test_version_history.js && node test_detection_api.js && node test_audit.js && node test_semantic_search.js && node test_integrity.js",
     "test:rbac": "node test_rbac.js && node test_search_rbac_api.js && node test_rbac_regression.js"
   },
   "dependencies": {
@@ -16,5 +16,8 @@
     "express": "^4.21.2",
     "mongoose": "^9.11.2",
     "multer": "^2.4.0"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.3.0"
   }
 }

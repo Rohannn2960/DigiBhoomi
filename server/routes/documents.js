@@ -6,6 +6,8 @@ const fs = require('fs');
 const Document = require('../models/Document');
 const AuditEvent = require('../models/AuditEvent');
 const User = require('../models/User');
+const DocumentVersion = require('../models/DocumentVersion');
+const OwnershipHistory = require('../models/OwnershipHistory');
 const { upload, uploadDir, calculateFileHash } = require('../middleware/upload');
 const { calculateExtractionValidation } = require('../validation');
 const { runDetectionPipeline } = require('../detection');
@@ -13,6 +15,13 @@ const { recordAuditEvent: recordDocumentAudit, computeFieldDiffs } = require('..
 const { recordAuditEvent } = require('../services/audit');
 const { indexDocument } = require('../services/semanticSearchService');
 const { authenticate, findAuthorizedDocument, hasDocumentAccess, requireRole } = require('../middleware/auth');
+const {
+  createInitialVersion,
+  recordDocumentVersion,
+  extractSnapshot,
+  compareVersions
+} = require('../services/versionService');
+const { transferOwnership } = require('../services/ownershipService');
 
 const HASH_ALGORITHM = 'SHA-256';
 
@@ -115,6 +124,7 @@ router.post('/', requireRole('Citizen', 'Admin'), handleUpload, async (req, res)
         outcome: 'SUCCESS',
         metadata: { hashAlgorithm: HASH_ALGORITHM, sha256Hash, role: req.user.role }
       });
+      await createInitialVersion(savedDoc, req.user);
     } catch (auditError) {
       await Document.deleteOne({ _id: savedDoc._id });
       throw auditError;
@@ -209,6 +219,8 @@ router.patch('/:id/review', requireRole('Officer', 'Admin'), async (req, res, ne
       return res.status(409).json({ error: 'Only documents awaiting review can be approved or rejected.' });
     }
 
+    const previousSnapshot = extractSnapshot(document);
+
     const allowedFields = new Set([
       'ownerName', 'surveyNumber', 'khasraNumber', 'khataNumber', 'area', 'areaUnit',
       'landArea', 'village', 'tehsil', 'district', 'landClassification'
@@ -255,6 +267,14 @@ router.patch('/:id/review', requireRole('Officer', 'Admin'), async (req, res, ne
       outcome: 'SUCCESS',
       metadata: { status: document.status, action: reviewAction, remarks, role: req.user.role }
     });
+
+    await recordDocumentVersion(document, {
+      user: req.user,
+      changeType: 'REVIEW_DECISION',
+      changeReason: remarks ? `Review decision (${reviewAction}): ${remarks}` : `Review decision: ${reviewAction}`,
+      previousSnapshot
+    });
+
     return res.json(document);
   } catch (error) {
     return next(error);
@@ -688,7 +708,8 @@ router.patch('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Document record not found.' });
     }
 
-    const { landDetails, status } = req.body || {};
+    const previousSnapshot = extractSnapshot(document);
+    const { landDetails, status, changeReason } = req.body || {};
 
     // 1. Enforce strict role constraints
     if (req.user.role === 'Citizen') {
@@ -790,6 +811,23 @@ router.patch('/:id', async (req, res) => {
 
     if (modified) {
       await document.save();
+
+      // Automatic version creation on meaningful modifications
+      try {
+        const changeType = (status && !landDetails) ? 'STATUS_CHANGE' : 'CORRECTION';
+        const recordedReason = changeReason || (status && !landDetails
+          ? `Status changed to ${status}`
+          : 'Corrected land details attribute(s)');
+        await recordDocumentVersion(document, {
+          user: req.user,
+          changeType,
+          changeReason: recordedReason,
+          previousSnapshot
+        });
+      } catch (verErr) {
+        console.error('[Version Recording Error in PATCH /:id]:', verErr.message);
+      }
+
       // Automatic background semantic indexing on field/status updates (non-blocking, safe)
       if (mongoose.connection.readyState === 1) {
         indexDocument(document._id).catch(idxErr => {
@@ -980,6 +1018,383 @@ router.get('/:id/verify-integrity', async (req, res) => {
   } catch (err) {
     return res.status(500).json({
       error: 'Failed to verify document integrity.',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * GET /api/documents/:id/versions
+ * List all historical versions of a document.
+ * Enforces document-level RBAC access control.
+ * Sanitizes internal filesystem paths.
+ */
+router.get('/:id/versions', async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: 'Invalid document ID format.' });
+  }
+
+  try {
+    const document = await findAuthorizedDocument(id, req.user);
+    if (!document) {
+      return res.status(404).json({ error: 'Document record not found.' });
+    }
+
+    const sortOrder = req.query.sort === 'asc' ? 1 : -1;
+    let versions = await DocumentVersion.find({ documentId: document._id })
+      .populate('changedBy', 'displayName email role')
+      .sort({ versionNumber: sortOrder })
+      .lean();
+
+    // If document was created before versioning existed, lazily synthesize version 1
+    if (versions.length === 0) {
+      try {
+        const v1 = await createInitialVersion(document, req.user);
+        versions = [v1.toObject ? v1.toObject() : v1];
+      } catch (lazyErr) {
+        console.warn(`[Lazy v1 Creation Notice on doc ${id}]:`, lazyErr.message);
+      }
+    }
+
+    // Sanitize snapshots to prevent exposing internal filesystem paths
+    for (const v of versions) {
+      if (v.snapshot?.fileMetadata) {
+        delete v.snapshot.fileMetadata.storagePath;
+      }
+    }
+
+    return res.json({
+      documentId: document._id,
+      currentVersion: document.currentVersion || versions.length || 1,
+      totalVersions: versions.length,
+      versions
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: 'Failed to retrieve document version history.',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * GET /api/documents/:id/versions/compare
+ * Compares two historical versions of a document.
+ * Query params: ?from=1&to=2
+ * Displays previous value, updated value, changed field, version numbers, modification date, user responsible.
+ * Highlights added, modified, removed, and unchanged values with summary statistics.
+ */
+router.get('/:id/versions/compare', async (req, res) => {
+  const { id } = req.params;
+  const fromNum = parseInt(req.query.from, 10);
+  const toNum = parseInt(req.query.to, 10);
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: 'Invalid document ID format.' });
+  }
+
+  if (isNaN(fromNum) || isNaN(toNum) || fromNum < 1 || toNum < 1) {
+    return res.status(400).json({ error: "Both 'from' and 'to' version numbers are required and must be positive integers." });
+  }
+
+  if (fromNum === toNum) {
+    return res.status(400).json({ error: 'Identical version selection is prohibited. Please select two different versions to compare.' });
+  }
+
+  try {
+    const document = await findAuthorizedDocument(id, req.user);
+    if (!document) {
+      return res.status(404).json({ error: 'Document record not found.' });
+    }
+
+    const [v1, v2] = await Promise.all([
+      DocumentVersion.findOne({ documentId: document._id, versionNumber: fromNum })
+        .populate('changedBy', 'displayName email role'),
+      DocumentVersion.findOne({ documentId: document._id, versionNumber: toNum })
+        .populate('changedBy', 'displayName email role')
+    ]);
+
+    if (!v1 || !v2) {
+      return res.status(404).json({ error: `Specified version (${!v1 ? fromNum : toNum}) does not exist for this document.` });
+    }
+
+    const comparison = compareVersions(v1, v2);
+
+    // Record audit event for version comparison (strictly read-only)
+    await recordAuditEvent({
+      actorId: req.user._id,
+      action: 'DOCUMENT_VERSIONS_COMPARED',
+      resourceType: 'DOCUMENT',
+      resourceId: document._id.toString(),
+      documentId: document._id,
+      description: `Compared version ${fromNum} with version ${toNum} of document '${document.fileMetadata?.originalFilename || id}'.`,
+      outcome: 'SUCCESS',
+      metadata: {
+        documentId: document._id.toString(),
+        fromVersion: fromNum,
+        toVersion: toNum,
+        changedFieldsCount: comparison.summary?.changedFields ?? comparison.differences?.length ?? 0,
+        unchangedFieldsCount: comparison.summary?.unchangedFields ?? 0,
+        role: req.user.role
+      }
+    });
+
+    return res.json({
+      documentId: document._id,
+      documentReference: document.fileMetadata?.originalFilename || document._id.toString(),
+      ...comparison
+    });
+  } catch (err) {
+    const statusCode = err.statusCode || 500;
+    return res.status(statusCode).json({
+      error: err.message || 'Failed to compare document versions.',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/documents/:id/versions/replace-file
+ * Replace the physical file of a document (e.g. enhanced re-scan).
+ * Authorized: Officer or Admin only.
+ * Creates a DOCUMENT_REPLACEMENT version and maintains SHA-256 integrity verification.
+ */
+router.post('/:id/versions/replace-file', requireRole('Officer', 'Admin'), handleUpload, async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: 'Invalid document ID format.' });
+  }
+
+  if (!req.file) {
+    return res.status(400).json({ error: 'No replacement file attached.' });
+  }
+
+  let newSha256Hash;
+  try {
+    newSha256Hash = await calculateFileHash(req.file.path);
+  } catch (hashErr) {
+    await fs.promises.unlink(req.file.path).catch(() => {});
+    return res.status(500).json({ error: 'Failed to compute SHA-256 hash for replacement file.' });
+  }
+
+  try {
+    const document = await findAuthorizedDocument(id, req.user);
+    if (!document) {
+      await fs.promises.unlink(req.file.path).catch(() => {});
+      return res.status(404).json({ error: 'Document record not found.' });
+    }
+
+    const previousSnapshot = extractSnapshot(document);
+    const oldFilename = document.fileMetadata.originalFilename;
+    const oldHash = document.fileMetadata.sha256Hash;
+
+    // Update document file metadata
+    document.fileMetadata = {
+      originalFilename: req.file.originalname,
+      storedFilename: req.file.filename,
+      mimeType: req.file.mimetype,
+      sizeBytes: req.file.size,
+      sha256Hash: newSha256Hash,
+      hashAlgorithm: HASH_ALGORITHM,
+      storagePath: req.file.path
+    };
+    document.integrityVerification = {
+      status: 'INTEGRITY_VERIFIED',
+      calculatedHash: newSha256Hash,
+      verifiedAt: new Date()
+    };
+
+    const reason = req.body.changeReason || `Replaced file '${oldFilename}' with '${req.file.originalname}'`;
+
+    const diffs = [{
+      field: 'fileMetadata.sha256Hash',
+      label: 'Document File Replacement',
+      before: `${oldFilename} (${oldHash})`,
+      after: `${req.file.originalname} (${newSha256Hash})`
+    }];
+
+    const newVersion = await recordDocumentVersion(document, {
+      user: req.user,
+      changeType: 'DOCUMENT_REPLACEMENT',
+      changeReason: reason,
+      diffs,
+      previousSnapshot
+    });
+
+    await recordAuditEvent({
+      actorId: req.user._id,
+      action: 'DOCUMENT_REPLACED',
+      resourceType: 'DOCUMENT',
+      resourceId: document._id.toString(),
+      documentId: document._id,
+      description: `Physical document replaced by officer ${req.user.displayName || req.user.email}. New SHA-256: ${newSha256Hash}`,
+      outcome: 'SUCCESS',
+      metadata: {
+        previousFilename: oldFilename,
+        newFilename: req.file.originalname,
+        previousSha256: oldHash,
+        newSha256: newSha256Hash,
+        versionNumber: newVersion.versionNumber,
+        role: req.user.role
+      }
+    });
+
+    return res.status(201).json({
+      message: 'Document file replaced successfully.',
+      document,
+      newVersion
+    });
+  } catch (err) {
+    await fs.promises.unlink(req.file.path).catch(() => {});
+    return res.status(500).json({
+      error: 'Failed to replace document file.',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * GET /api/documents/:id/versions/:versionNumber
+ * Retrieve a specific historical version snapshot by version number.
+ * Enforces document-level RBAC access control.
+ */
+router.get('/:id/versions/:versionNumber', async (req, res) => {
+  const { id, versionNumber } = req.params;
+  const vNum = parseInt(versionNumber, 10);
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: 'Invalid document ID format.' });
+  }
+
+  if (isNaN(vNum) || vNum < 1) {
+    return res.status(400).json({ error: 'Invalid version number.' });
+  }
+
+  try {
+    const document = await findAuthorizedDocument(id, req.user);
+    if (!document) {
+      return res.status(404).json({ error: 'Document record not found.' });
+    }
+
+    const version = await DocumentVersion.findOne({ documentId: document._id, versionNumber: vNum })
+      .populate('changedBy', 'displayName email role')
+      .lean();
+
+    if (!version) {
+      return res.status(404).json({ error: `Version ${vNum} not found for this document.` });
+    }
+
+    if (version.snapshot?.fileMetadata) {
+      delete version.snapshot.fileMetadata.storagePath;
+    }
+
+    return res.json(version);
+  } catch (err) {
+    return res.status(500).json({
+      error: 'Failed to retrieve document version.',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * GET /api/documents/:id/ownership-history
+ * Retrieve ownership history for a document.
+ * Enforces RBAC document access control.
+ */
+router.get('/:id/ownership-history', async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: 'Invalid document ID format.' });
+  }
+
+  try {
+    const document = await findAuthorizedDocument(id, req.user);
+    if (!document) {
+      return res.status(404).json({ error: 'Document record not found.' });
+    }
+
+    const sortOrder = req.query.sort === 'asc' ? 1 : -1;
+    const history = await OwnershipHistory.find({ documentId: document._id })
+      .populate('officerResponsible.userId', 'displayName email role')
+      .populate('previousOwner.userId', 'displayName email role')
+      .populate('newOwner.userId', 'displayName email role')
+      .sort({ transferDate: sortOrder });
+
+    return res.json({
+      documentId: document._id,
+      totalTransfers: history.length,
+      history
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: 'Failed to retrieve ownership history.',
+      details: err.message
+    });
+  }
+});
+
+/**
+ * POST /api/documents/:id/transfer-ownership
+ * Explicit ownership transfer workflow.
+ * Authorized: Officer or Admin only.
+ * Ordinary metadata corrections do NOT trigger this endpoint.
+ */
+router.post('/:id/transfer-ownership', requireRole('Officer', 'Admin'), async (req, res) => {
+  const { id } = req.params;
+  const { newOwnerName, newOwnerUserId, reason, supportingDocumentRef } = req.body || {};
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: 'Invalid document ID format.' });
+  }
+
+  if (!newOwnerName || typeof newOwnerName !== 'string' || !newOwnerName.trim()) {
+    return res.status(400).json({ error: 'New owner name is required.' });
+  }
+
+  if (!reason || typeof reason !== 'string' || !reason.trim()) {
+    return res.status(400).json({ error: 'A legitimate reason for ownership transfer is required.' });
+  }
+
+  if (newOwnerUserId && !mongoose.Types.ObjectId.isValid(newOwnerUserId)) {
+    return res.status(400).json({ error: 'Invalid new owner user ID format.' });
+  }
+
+  try {
+    const document = await findAuthorizedDocument(id, req.user);
+    if (!document) {
+      return res.status(404).json({ error: 'Document record not found.' });
+    }
+
+    const result = await transferOwnership({
+      document,
+      newOwnerName,
+      newOwnerUserId,
+      officer: req.user,
+      reason,
+      supportingDocumentRef
+    });
+
+    // Semantic search background indexing
+    if (mongoose.connection.readyState === 1) {
+      indexDocument(document._id).catch(idxErr => {
+        console.warn(`[Background Semantic Indexing Warning after ownership transfer on doc ${id}]:`, idxErr.message);
+      });
+    }
+
+    return res.status(200).json({
+      message: 'Ownership transferred and recorded successfully.',
+      ownershipHistory: result.ownershipHistory,
+      newVersion: result.newVersion,
+      document: result.document
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: 'Failed to transfer ownership.',
       details: err.message
     });
   }

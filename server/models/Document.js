@@ -140,7 +140,8 @@ const DocumentSchema = new mongoose.Schema({
   },
   reviewRemarks: { type: String, default: '', maxlength: 2000 },
   reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-  reviewedAt: { type: Date, default: null }
+  reviewedAt: { type: Date, default: null },
+  currentVersion: { type: Number, default: 1, min: 1 }
 }, { 
   timestamps: true,
   toJSON: {

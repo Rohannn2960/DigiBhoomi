@@ -24,20 +24,50 @@ app.use(cors({
 app.use(csrfProtection);
 app.use(express.json());
 
-// Connect to MongoDB
-mongoose.connect(MONGODB_URI)
-  .then(async () => {
+// Connect to MongoDB with automatic fallback to embedded in-memory MongoDB for local dev
+async function initializeDatabase() {
+  try {
+    await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 2500 });
     console.log(`[DigiBhoomi Database] Connected successfully to MongoDB at ${MONGODB_URI}`);
+  } catch (err) {
+    console.warn(`[DigiBhoomi Database] Direct connection to ${MONGODB_URI} failed (${err.code || err.message}).`);
+    if (MONGODB_URI.includes('localhost') || MONGODB_URI.includes('127.0.0.1')) {
+      try {
+        console.log('[DigiBhoomi Database] Starting embedded MongoDB service...');
+        const { MongoMemoryServer } = require('mongodb-memory-server');
+        const mongod = await MongoMemoryServer.create();
+        const memUri = mongod.getUri();
+        await mongoose.connect(memUri);
+        console.log(`[DigiBhoomi Database] Connected successfully to embedded MongoDB at ${memUri}`);
+      } catch (memErr) {
+        console.error('[DigiBhoomi Database] Failed to initialize embedded MongoDB:', memErr.message);
+      }
+    }
+  }
+
+  if (mongoose.connection.readyState === 1) {
     try {
       const admin = await ensureBootstrapAdmin();
-      if (admin) console.log('[DigiBhoomi Auth] Bootstrap administrator ready.');
-    } catch (err) {
-      console.error('[DigiBhoomi Auth] Bootstrap administrator setup failed:', err.message);
+      if (admin) console.log(`[DigiBhoomi Auth] Bootstrap administrator ready (${admin.email}).`);
+    } catch (adminErr) {
+      console.error('[DigiBhoomi Auth] Bootstrap administrator setup failed:', adminErr.message);
     }
-  })
-  .catch((err) => {
-    console.error(`[DigiBhoomi Database] MongoDB connection error:`, err.message);
-  });
+  }
+}
+
+initializeDatabase();
+
+// Database connection guard
+app.use((req, res, next) => {
+  if (req.path === '/api/health') return next();
+  if (req.path.startsWith('/api') && mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      error: 'Database connection unavailable. MongoDB is not running or still initializing.',
+      database: 'disconnected'
+    });
+  }
+  next();
+});
 
 // Health Check Endpoint
 app.get('/api/health', (req, res) => {
