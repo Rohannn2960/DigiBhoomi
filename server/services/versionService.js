@@ -212,9 +212,15 @@ async function recordDocumentVersion(document, {
 
   const savedVersion = await version.save();
 
-  // Update currentVersion pointer on Document
-  document.currentVersion = nextVersionNumber;
-  await document.save();
+  try {
+    // Update currentVersion pointer on Document
+    document.currentVersion = nextVersionNumber;
+    await document.save();
+  } catch (docSaveErr) {
+    // Safe compensation: delete orphaned version on failed document update to maintain consistency
+    await DocumentVersion.deleteOne({ _id: savedVersion._id }, { allowTestCleanup: true }).catch(() => {});
+    throw docSaveErr;
+  }
 
   await recordAuditEvent({
     actorId: user._id,

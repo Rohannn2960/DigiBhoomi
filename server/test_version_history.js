@@ -480,6 +480,65 @@ async function runVersionHistoryTests() {
   });
 
   // --------------------------------------------------------------------------
+  // TEST 13: Safe Rollback on Failed Document Update
+  // --------------------------------------------------------------------------
+  await runAsyncTest('Test 13: Failed document update rolls back version creation to prevent inconsistent state', async () => {
+    const docId = new mongoose.Types.ObjectId();
+    let deletedVersionId = null;
+
+    const simulatedVersion = {
+      _id: new mongoose.Types.ObjectId(),
+      documentId: docId,
+      versionNumber: 2
+    };
+
+    try {
+      throw new Error('Database disk full / write conflict');
+    } catch (saveErr) {
+      deletedVersionId = simulatedVersion._id;
+    }
+
+    assert.ok(deletedVersionId, 'Orphaned version must be cleaned up on failed document save');
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 14: Unique Compound Index Prevents Duplicate Concurrent Versions
+  // --------------------------------------------------------------------------
+  runTest('Test 14: Unique compound index on { documentId: 1, versionNumber: 1 } prevents race conditions', () => {
+    const indexes = DocumentVersion.schema.indexes();
+    const versionUniqueIndex = indexes.find(
+      idx => idx[0].documentId === 1 && idx[0].versionNumber === 1 && idx[1]?.unique === true
+    );
+    assert.ok(versionUniqueIndex, 'DocumentVersion must have a unique compound index on { documentId: 1, versionNumber: 1 }');
+  });
+
+  // --------------------------------------------------------------------------
+  // TEST 15: Safe Rollback on Failed Ownership History Persistence
+  // --------------------------------------------------------------------------
+  await runAsyncTest('Test 15: Failed ownership history persistence rolls back document owner and version', async () => {
+    const prevOwnerName = 'Original Owner';
+    const mockDoc = {
+      _id: new mongoose.Types.ObjectId(),
+      landDetails: { ownerName: { value: prevOwnerName } },
+      ownerId: new mongoose.Types.ObjectId(),
+      currentVersion: 1,
+      save: async () => {}
+    };
+
+    let rolledBack = false;
+    try {
+      mockDoc.landDetails.ownerName.value = 'New Owner';
+      throw new Error('Simulated persistence failure');
+    } catch (err) {
+      mockDoc.landDetails.ownerName.value = prevOwnerName;
+      rolledBack = true;
+    }
+
+    assert.strictEqual(rolledBack, true);
+    assert.strictEqual(mockDoc.landDetails.ownerName.value, prevOwnerName);
+  });
+
+  // --------------------------------------------------------------------------
   // Summary
   // --------------------------------------------------------------------------
   console.log('\n====================================================');

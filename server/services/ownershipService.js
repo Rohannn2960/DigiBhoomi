@@ -118,7 +118,18 @@ async function transferOwnership({
     versionNumber: newVersion.versionNumber
   });
 
-  const savedHistory = await historyEntry.save();
+  let savedHistory;
+  try {
+    savedHistory = await historyEntry.save();
+  } catch (histErr) {
+    // Rollback document state and version on failure to prevent inconsistent records
+    document.landDetails.ownerName.value = prevOwnerName;
+    document.ownerId = prevOwnerId;
+    document.currentVersion = newVersion.versionNumber > 1 ? newVersion.versionNumber - 1 : 1;
+    await document.save().catch(() => {});
+    await DocumentVersion.deleteOne({ _id: newVersion._id }, { allowTestCleanup: true }).catch(() => {});
+    throw new Error(`Failed to persist ownership history record: ${histErr.message}`);
+  }
 
   // Record audit log
   await recordAuditEvent({

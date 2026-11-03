@@ -268,16 +268,12 @@ router.patch('/:id/review', requireRole('Officer', 'Admin'), async (req, res, ne
       metadata: { status: document.status, action: reviewAction, remarks, role: req.user.role }
     });
 
-    try {
-      await recordDocumentVersion(document, {
-        user: req.user,
-        changeType: 'REVIEW_DECISION',
-        changeReason: remarks ? `Review decision (${reviewAction}): ${remarks}` : `Review decision: ${reviewAction}`,
-        previousSnapshot
-      });
-    } catch (verErr) {
-      console.error('[Version Recording Error in Review]:', verErr.message);
-    }
+    await recordDocumentVersion(document, {
+      user: req.user,
+      changeType: 'REVIEW_DECISION',
+      changeReason: remarks ? `Review decision (${reviewAction}): ${remarks}` : `Review decision: ${reviewAction}`,
+      previousSnapshot
+    });
 
     return res.json(document);
   } catch (error) {
