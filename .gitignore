@@ -42,3 +42,6 @@ yarn-error.log*
 *.njsproj
 *.sln
 *.sw?
+
+# Downloaded TGRAC GIS reference data
+server/data/telangana_mandal_boundaries.geojson
