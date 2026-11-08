@@ -26,6 +26,7 @@ property boundary verification or legal land title determinations.
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import sys
@@ -578,6 +579,14 @@ def main() -> int:
     geojson_size_mb = os.path.getsize(args.output) / (1024 * 1024)
     print(f"  GeoJSON saved successfully ({geojson_size_mb:.2f} MB).")
 
+    # Compute SHA-256 hash of the generated GeoJSON file
+    hasher = hashlib.sha256()
+    with open(args.output, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    geojson_sha256 = hasher.hexdigest()
+    print(f"  GeoJSON SHA-256 fingerprint: {geojson_sha256}")
+
     # 8. Write Metadata JSON Output
     print(f"Writing metadata to '{args.metadata}'...")
     os.makedirs(os.path.dirname(os.path.abspath(args.metadata)), exist_ok=True)
@@ -590,6 +599,7 @@ def main() -> int:
         "retrieval_date": retrieval_date,
         "coordinate_reference_system": "EPSG:4326 (WGS84)",
         "source_spatial_reference": source_sr,
+        "geojson_sha256": geojson_sha256,
         "total_object_ids_in_service": total_oids,
         "successfully_downloaded_features": len(downloaded_features),
         "failed_features_count": len(failed_oids),

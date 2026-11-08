@@ -8,6 +8,7 @@
     "wkid": 32644,
     "latestWkid": 32644
   },
+  "geojson_sha256": "548140196bd0ad11aad4a48923882861b25f97961afe516cdb90fffdbe9ea2fe",
   "total_object_ids_in_service": 621,
   "successfully_downloaded_features": 621,
   "failed_features_count": 0,

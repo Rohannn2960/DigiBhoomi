@@ -22,6 +22,13 @@ const {
   compareVersions
 } = require('../services/versionService');
 const { transferOwnership } = require('../services/ownershipService');
+const MandalBoundary = require('../models/MandalBoundary');
+const {
+  MANDATORY_DISCLAIMER,
+  getDatasetMetadata,
+  checkValidationStaleness,
+  validateAdministrativeJurisdiction
+} = require('../services/gisService');
 
 const HASH_ALGORITHM = 'SHA-256';
 
@@ -683,6 +690,194 @@ router.post('/:id/conflicts/analyze', async (req, res) => {
       error: 'Failed to analyze document for conflicts and duplicates.',
       details: err.message
     });
+  }
+});
+
+/**
+ * GET /api/documents/:id/gis
+ * Retrieves stored administrative GIS validation metadata and boundary geometry for a document.
+ *
+ * Authorization:
+ * - Checks findAuthorizedDocument(id, req.user) FIRST to preserve 404 anti-enumeration.
+ * - Allowed for document owner (Citizen), assigned Officer, and Admin.
+ * - Nonexistent documents, unrelated Citizens, and unassigned Officers receive 404.
+ */
+router.get('/:id/gis', async (req, res, next) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: 'Invalid document ID format.' });
+  }
+
+  try {
+    const document = await findAuthorizedDocument(id, req.user);
+    if (!document) {
+      return res.status(404).json({ error: 'Document record not found.' });
+    }
+
+    const currentMeta = getDatasetMetadata();
+    const storedGis = document.gisValidation ? document.gisValidation.toObject() : null;
+
+    if (!storedGis || storedGis.status === 'NOT_RUN') {
+      return res.json({
+        documentId: document._id,
+        gisValidation: {
+          status: 'NOT_RUN',
+          validatedAt: null,
+          validatedBy: null,
+          matchedMandalId: null,
+          matchedDistrict: null,
+          matchedMandal: null,
+          mandalType: null,
+          revenueDivision: null,
+          datasetMetadata: currentMeta.isAvailable ? {
+            source: currentMeta.source,
+            layerId: currentMeta.layerId,
+            layerName: currentMeta.layerName,
+            crs: currentMeta.crs,
+            retrievalDate: currentMeta.retrievalDate,
+            featureCount: currentMeta.featureCount,
+            fingerprint: currentMeta.fingerprint
+          } : null,
+          discrepancies: [],
+          lastAnalyzedAt: null,
+          isStale: false,
+          staleReason: null,
+          boundary: null,
+          disclaimer: MANDATORY_DISCLAIMER
+        }
+      });
+    }
+
+    // Retrieve boundary geometry dynamically from MandalBoundary collection (never stored in Document)
+    let boundary = null;
+    if (storedGis.matchedMandalId) {
+      const mandalDoc = await MandalBoundary.findOne({ objectId: storedGis.matchedMandalId }).lean();
+      if (mandalDoc) {
+        boundary = {
+          type: 'Feature',
+          geometry: mandalDoc.geometry,
+          properties: {
+            objectId: mandalDoc.objectId,
+            district: mandalDoc.district,
+            mandal: mandalDoc.mandal,
+            mandalType: mandalDoc.mandalType,
+            revenueDivision: mandalDoc.revenueDivision
+          }
+        };
+      }
+    }
+
+    const { isStale, staleReason } = checkValidationStaleness(storedGis.datasetMetadata, currentMeta);
+
+    return res.json({
+      documentId: document._id,
+      gisValidation: {
+        ...storedGis,
+        isStale,
+        staleReason,
+        boundary,
+        disclaimer: MANDATORY_DISCLAIMER
+      }
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+/**
+ * POST /api/documents/:id/gis/validate
+ * Executes administrative jurisdiction GIS validation against TGRAC Mandal boundaries.
+ *
+ * Authorization:
+ * - Checks findAuthorizedDocument(id, req.user) FIRST to preserve 404 anti-enumeration.
+ * - Unrelated Citizens and unassigned Officers receive 404.
+ * - Citizens who own the document receive 403 (validation is an official officer review action).
+ * - Assigned Officers and Admins are authorized.
+ *
+ * Integrity:
+ * - Does NOT modify document status (e.g. Needs review, Verified, Rejected remain untouched).
+ * - Does NOT modify document ownership.
+ * - Does NOT duplicate boundary geometry inside Document.js.
+ * - Logs an immutable audit event via canonical recordDocumentAudit.
+ */
+router.post('/:id/gis/validate', async (req, res, next) => {
+  const { id } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: 'Invalid document ID format.' });
+  }
+
+  try {
+    // 1. Check document existence and access FIRST (preserves 404 anti-enumeration)
+    const document = await findAuthorizedDocument(id, req.user);
+    if (!document) {
+      return res.status(404).json({ error: 'Document record not found.' });
+    }
+
+    // 2. Role check ONLY AFTER document access is established
+    if (req.user.role === 'Citizen') {
+      return res.status(403).json({
+        error: 'Citizens are not permitted to execute official administrative GIS validation.'
+      });
+    }
+
+    if (req.user.role !== 'Officer' && req.user.role !== 'Admin') {
+      return res.status(403).json({
+        error: 'Insufficient permissions to perform administrative GIS validation.'
+      });
+    }
+
+    // 3. Execute validation service (preserves original document fields)
+    const validationResult = await validateAdministrativeJurisdiction(document.landDetails);
+
+    // 4. Update Document GIS validation metadata (NO GEOMETRY STORED)
+    document.gisValidation = {
+      status: validationResult.status,
+      validatedAt: new Date(),
+      validatedBy: req.user._id,
+      matchedMandalId: validationResult.matchedMandal?.objectId || null,
+      matchedDistrict: validationResult.matchedMandal?.district || null,
+      matchedMandal: validationResult.matchedMandal?.mandal || null,
+      mandalType: validationResult.matchedMandal?.mandalType || null,
+      revenueDivision: validationResult.matchedMandal?.revenueDivision || null,
+      datasetMetadata: validationResult.datasetMetadata,
+      discrepancies: validationResult.discrepancies,
+      lastAnalyzedAt: new Date()
+    };
+
+    // Save document without changing status or ownerId
+    await document.save();
+
+    // 5. Record canonical audit event via server/audit.js
+    await recordDocumentAudit({
+      documentId: document._id,
+      action: 'DOCUMENT_GIS_VALIDATED',
+      req,
+      description: `Administrative GIS validation executed: status '${validationResult.status}'.`,
+      details: {
+        status: validationResult.status,
+        matchedDistrict: validationResult.matchedMandal?.district || null,
+        matchedMandal: validationResult.matchedMandal?.mandal || null,
+        discrepancyCount: validationResult.discrepancies.length,
+        datasetRetrievalDate: validationResult.datasetMetadata?.retrievalDate,
+        datasetFingerprint: validationResult.datasetMetadata?.fingerprint
+      },
+      outcome: 'SUCCESS'
+    });
+
+    return res.json({
+      documentId: document._id,
+      gisValidation: {
+        ...document.gisValidation.toObject(),
+        isStale: false,
+        staleReason: null,
+        boundary: validationResult.boundary,
+        disclaimer: MANDATORY_DISCLAIMER
+      }
+    });
+  } catch (err) {
+    return next(err);
   }
 });
 

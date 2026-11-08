@@ -112,6 +112,37 @@ const DocumentSchema = new mongoose.Schema({
     },
     lastAnalyzedAt: { type: Date, default: null }
   },
+  gisValidation: {
+    status: {
+      type: String,
+      enum: ['NOT_RUN', 'MATCHED', 'POTENTIAL_DISCREPANCY', 'UNABLE_TO_VERIFY'],
+      default: 'NOT_RUN'
+    },
+    validatedAt: { type: Date, default: null },
+    validatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    matchedMandalId: { type: Number, default: null },
+    matchedDistrict: { type: String, default: null },
+    matchedMandal: { type: String, default: null },
+    mandalType: { type: String, default: null },
+    revenueDivision: { type: String, default: null },
+    datasetMetadata: {
+      source: { type: String, default: null },
+      layerId: { type: Number, default: null },
+      layerName: { type: String, default: null },
+      crs: { type: String, default: null },
+      retrievalDate: { type: String, default: null },
+      featureCount: { type: Number, default: null },
+      fingerprint: { type: String, default: null }
+    },
+    discrepancies: [{
+      field: { type: String, required: true },
+      documentValue: { type: String, default: '' },
+      gisValue: { type: String, default: '' },
+      severity: { type: String, enum: ['INFO', 'WARNING', 'CRITICAL'], default: 'WARNING' },
+      message: { type: String, required: true }
+    }],
+    lastAnalyzedAt: { type: Date, default: null }
+  },
   landDetails: {
     ownerName: { type: ExtractedFieldSchema, default: () => ({}) },
     surveyNumber: { type: ExtractedFieldSchema, default: () => ({}) },

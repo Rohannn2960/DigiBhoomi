@@ -16,6 +16,7 @@ import DocumentViewer from '../components/DocumentViewer';
 import StatusBadge from '../components/StatusBadge';
 import VersionHistoryTab from '../components/VersionHistoryTab';
 import OwnershipHistoryTab from '../components/OwnershipHistoryTab';
+import GisValidationTab from '../components/GisValidationTab';
 import {
   ArrowLeft,
   Save,
@@ -36,7 +37,8 @@ import {
   User,
   Clock,
   ShieldCheck,
-  Award
+  Award,
+  MapPin
 } from 'lucide-react';
 
 const defaultField = {
@@ -108,7 +110,7 @@ export default function ReviewPage() {
   const [conflictActionMessage, setConflictActionMessage] = useState(null);
 
   // Tab State
-  const [activeTab, setActiveTab] = useState('fields'); // 'fields', 'versions', 'ownership', 'conflicts', 'audit'
+  const [activeTab, setActiveTab] = useState('fields'); // 'fields', 'versions', 'ownership', 'conflicts', 'audit', 'gis'
 
   // Phase 4 Audit History State
   const [auditEvents, setAuditEvents] = useState([]);
@@ -848,6 +850,57 @@ export default function ReviewPage() {
                 </span>
               )}
             </button>
+
+            <button
+              onClick={() => setActiveTab('gis')}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '0.4rem 0.8rem',
+                fontSize: '0.82rem',
+                fontWeight: 600,
+                borderRadius: 'var(--radius)',
+                border: '1px solid',
+                borderColor: activeTab === 'gis' ? 'var(--primary)' : '#e2e8f0',
+                background: activeTab === 'gis' ? '#ffffff' : '#f8fafc',
+                color: activeTab === 'gis' ? 'var(--primary)' : 'var(--text-muted)',
+                cursor: 'pointer',
+                boxShadow: activeTab === 'gis' ? 'var(--shadow-sm)' : 'none',
+                whiteSpace: 'nowrap'
+              }}
+            >
+              <MapPin size={14} />
+              <span>GIS & Boundaries</span>
+              {record.gisValidation?.status && record.gisValidation.status !== 'NOT_RUN' && (
+                <span
+                  style={{
+                    fontSize: '0.68rem',
+                    background:
+                      record.gisValidation.status === 'MATCHED'
+                        ? '#dcfce7'
+                        : record.gisValidation.status === 'POTENTIAL_DISCREPANCY'
+                        ? '#fef3c7'
+                        : '#fee2e2',
+                    color:
+                      record.gisValidation.status === 'MATCHED'
+                        ? '#15803d'
+                        : record.gisValidation.status === 'POTENTIAL_DISCREPANCY'
+                        ? '#92400e'
+                        : '#991b1b',
+                    padding: '0.1rem 0.4rem',
+                    borderRadius: '4px',
+                    fontWeight: 700
+                  }}
+                >
+                  {record.gisValidation.status === 'MATCHED'
+                    ? 'Matched'
+                    : record.gisValidation.status === 'POTENTIAL_DISCREPANCY'
+                    ? 'Discrepancy'
+                    : 'Unverified'}
+                </span>
+              )}
+            </button>
           </div>
 
           <div className="form-body">
@@ -867,6 +920,15 @@ export default function ReviewPage() {
                 document={record}
                 canTransfer={canReview}
                 onOwnershipTransferred={handleReloadDocument}
+              />
+            )}
+
+            {/* GIS & Boundaries Tab Panel */}
+            {activeTab === 'gis' && (
+              <GisValidationTab
+                documentId={record._id}
+                canValidate={canReview}
+                onValidationComplete={handleReloadDocument}
               />
             )}
 
@@ -1369,6 +1431,46 @@ export default function ReviewPage() {
             </div>
 
             {/* Administrative Hierarchy: District, Tehsil, Village */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '6px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                  TGRAC Administrative Boundary Status:
+                </span>
+                {record.gisValidation?.status === 'MATCHED' ? (
+                  <span className="badge badge-verified" style={{ fontSize: '0.68rem', padding: '1px 6px' }}>Matched</span>
+                ) : record.gisValidation?.status === 'POTENTIAL_DISCREPANCY' ? (
+                  <span className="badge badge-needs-review" style={{ fontSize: '0.68rem', padding: '1px 6px' }}>Discrepancy</span>
+                ) : record.gisValidation?.status === 'UNABLE_TO_VERIFY' ? (
+                  <span className="badge badge-uploaded" style={{ fontSize: '0.68rem', padding: '1px 6px' }}>Unverified</span>
+                ) : (
+                  <span className="badge" style={{ fontSize: '0.68rem', padding: '1px 6px', background: '#f1f5f9', color: '#64748b' }}>Not Run</span>
+                )}
+                {record.gisValidation?.isStale && (
+                  <span style={{ fontSize: '0.68rem', padding: '1px 6px', background: '#fffbeb', color: '#b45309', border: '1px solid #fde68a', borderRadius: '4px', fontWeight: 600 }}>
+                    Dataset Updated
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('gis')}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontSize: '0.72rem',
+                  fontWeight: 600,
+                  color: 'var(--primary)'
+                }}
+              >
+                <MapPin size={12} />
+                <span>View GIS Map & Boundary &rarr;</span>
+              </button>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
               <div className="field-group">
                 <label className="field-label">District (जिला / జిల్లా)</label>

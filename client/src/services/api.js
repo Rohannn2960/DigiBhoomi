@@ -181,3 +181,14 @@ export async function transferOwnership(id, transferDetails) {
     body: JSON.stringify(transferDetails)
   });
 }
+
+export async function fetchDocumentGis(id) {
+  return apiRequest(`/api/documents/${id}/gis`);
+}
+
+export async function validateDocumentGis(id) {
+  return apiRequest(`/api/documents/${id}/gis/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
