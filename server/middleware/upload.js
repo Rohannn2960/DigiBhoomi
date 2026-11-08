@@ -2,9 +2,16 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { validateTestUploadDir } = require('../test_helpers/isolation');
 
-// Resolve and ensure uploads directory exists
-const uploadDir = path.resolve(__dirname, '..', process.env.UPLOAD_DIR || 'uploads');
+// Resolve and ensure uploads directory exists (test-aware fallback & strict validation)
+const isTestEnv = process.env.NODE_ENV === 'test' || String(process.env.PORT) === '5001';
+const defaultUploadDir = isTestEnv ? (process.env.RBAC_TEST_UPLOAD_DIR || 'uploads_rbac_test') : 'uploads';
+const rawUploadDir = process.env.UPLOAD_DIR || defaultUploadDir;
+if (isTestEnv) {
+  validateTestUploadDir(path.resolve(__dirname, '..'), rawUploadDir);
+}
+const uploadDir = path.resolve(__dirname, '..', rawUploadDir);
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }

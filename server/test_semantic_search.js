@@ -26,6 +26,7 @@
  */
 
 const mongoose = require('mongoose');
+const { TEST_MONGODB_URI } = require('./test_helpers/config');
 const Document = require('./models/Document');
 const SemanticEmbedding = require('./models/SemanticEmbedding');
 const {
@@ -43,7 +44,7 @@ const {
   generateMatchExplanation
 } = require('./services/semanticSearchService');
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/digibhoomi';
+const MONGODB_URI = process.env.MONGODB_URI || TEST_MONGODB_URI;
 
 let testDocIds = [];
 

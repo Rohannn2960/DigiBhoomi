@@ -3,6 +3,10 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 require('dotenv').config();
 
+// Test environment isolation: detect and enforce strict test mode before loading any routes/middleware
+const { configureTestEnvironment } = require('./test_helpers/isolation');
+configureTestEnvironment(process.env, __dirname);
+
 const documentRoutes = require('./routes/documents');
 const searchRoutes = require('./routes/search');
 const authRoutes = require('./routes/auth');

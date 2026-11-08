@@ -1,20 +1,19 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '..', '.env') });
+const {
+  validateTestMongoUri,
+  validateTestUploadDir,
+  DEFAULT_TEST_MONGODB_URI,
+  DEFAULT_TEST_UPLOAD_DIR
+} = require('./isolation');
 
-const TEST_MONGODB_URI = process.env.RBAC_TEST_MONGODB_URI || 'mongodb://127.0.0.1:27017/digibhoomi_rbac_test';
-const mongoUrl = new URL(TEST_MONGODB_URI);
-const databaseName = mongoUrl.pathname.replace(/^\//, '');
-if (!['localhost', '127.0.0.1', '[::1]'].includes(mongoUrl.hostname)) {
-  throw new Error('Tests may only connect to a local MongoDB server.');
-}
-if (!databaseName.toLowerCase().endsWith('_test')) {
-  throw new Error('Tests require a MongoDB database name ending in _test.');
-}
+const serverRootDir = path.resolve(__dirname, '..');
 
-const TEST_UPLOAD_DIR = process.env.RBAC_TEST_UPLOAD_DIR || 'uploads_rbac_test';
-if (!path.basename(TEST_UPLOAD_DIR).toLowerCase().includes('test')) {
-  throw new Error('Tests require a separate upload directory whose name includes "test".');
-}
+const TEST_MONGODB_URI = process.env.RBAC_TEST_MONGODB_URI || DEFAULT_TEST_MONGODB_URI;
+validateTestMongoUri(TEST_MONGODB_URI);
+
+const TEST_UPLOAD_DIR = process.env.RBAC_TEST_UPLOAD_DIR || DEFAULT_TEST_UPLOAD_DIR;
+validateTestUploadDir(serverRootDir, TEST_UPLOAD_DIR);
 
 const TEST_API_BASE_URL = process.env.RBAC_TEST_API_URL || 'http://127.0.0.1:5001/api';
 const testApiUrl = new URL(TEST_API_BASE_URL);
@@ -23,6 +22,8 @@ if (!['localhost', '127.0.0.1'].includes(testApiUrl.hostname) || testApiUrl.port
 }
 const TEST_API_ORIGIN = testApiUrl.origin;
 
+process.env.NODE_ENV = 'test';
+process.env.PORT = '5001';
 process.env.MONGODB_URI = TEST_MONGODB_URI;
 process.env.UPLOAD_DIR = TEST_UPLOAD_DIR;
 
