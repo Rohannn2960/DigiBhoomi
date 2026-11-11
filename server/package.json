@@ -8,7 +8,8 @@
     "dev": "node --watch server.js",
     "test:server": "node scripts/start_test_server.js",
     "test:isolation": "node test_isolation.js",
-    "test": "node test_isolation.js && node test_validation.js && node test_detection.js && node test_version_history.js && node test_detection_api.js && node test_audit.js && node test_semantic_search.js && node test_integrity.js",
+    "test:compare": "node test_document_comparison.js && node test_document_comparison_http.js",
+    "test": "node test_isolation.js && node test_validation.js && node test_detection.js && node test_version_history.js && node test_detection_api.js && node test_audit.js && node test_semantic_search.js && node test_integrity.js && node test_document_comparison.js && node test_document_comparison_http.js",
     "test:rbac": "node test_rbac.js && node test_search_rbac_api.js && node test_rbac_regression.js",
     "test:gis": "node test_gis_api.js && node test_gis_http_api.js"
   },

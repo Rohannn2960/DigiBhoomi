@@ -402,3 +402,40 @@ h1, h2, h3, h4 {
   justify-content: flex-end;
   gap: 0.75rem;
 }
+
+/* Document Comparison Responsive Styles */
+@media (max-width: 768px) {
+  .comparison-table-wrapper table,
+  .comparison-table-wrapper thead,
+  .comparison-table-wrapper tbody,
+  .comparison-table-wrapper th,
+  .comparison-table-wrapper td,
+  .comparison-table-wrapper tr {
+    display: block;
+  }
+
+  .comparison-table-wrapper thead tr {
+    position: absolute;
+    top: -9999px;
+    left: -9999px;
+  }
+
+  .comparison-table-wrapper tr {
+    margin-bottom: 1rem;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius);
+    background: #ffffff;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .comparison-table-wrapper td {
+    border: none !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    position: relative;
+    padding: 0.65rem 0.85rem !important;
+  }
+
+  .comparison-table-wrapper td:last-child {
+    border-bottom: none !important;
+  }
+}

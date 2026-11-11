@@ -21,6 +21,7 @@ const {
   extractSnapshot,
   compareVersions
 } = require('../services/versionService');
+const { compareDocuments } = require('../services/documentComparisonService');
 const { transferOwnership } = require('../services/ownershipService');
 const MandalBoundary = require('../models/MandalBoundary');
 const {
@@ -176,6 +177,56 @@ router.get('/', async (req, res) => {
     return res.json(documents);
   } catch (err) {
     return res.status(500).json({ error: 'Failed to retrieve documents from database.' });
+  }
+});
+
+/**
+ * GET /api/documents/compare
+ * Compares any two distinct authorized documents across extracted land attributes and metadata.
+ * Both documents must be accessible to req.user under RBAC.
+ */
+router.get('/compare', async (req, res) => {
+  const doc1Id = req.query.doc1 || req.query.docA;
+  const doc2Id = req.query.doc2 || req.query.docB;
+
+  if (!doc1Id || !doc2Id) {
+    return res.status(400).json({ error: 'Two document IDs (doc1 and doc2) are required for comparison.' });
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(doc1Id) || !mongoose.Types.ObjectId.isValid(doc2Id)) {
+    return res.status(400).json({ error: 'Invalid document ID format.' });
+  }
+
+  if (doc1Id.toString() === doc2Id.toString()) {
+    return res.status(400).json({ error: 'Two distinct documents are required for comparison. To compare versions of the same document, use version history comparison.' });
+  }
+
+  try {
+    const doc1 = await findAuthorizedDocument(doc1Id, req.user);
+    const doc2 = await findAuthorizedDocument(doc2Id, req.user);
+
+    if (!doc1 || !doc2) {
+      return res.status(404).json({ error: 'One or both documents not found or access denied.' });
+    }
+
+    const comparison = compareDocuments(doc1, doc2);
+
+    await recordDocumentAudit({
+      documentId: doc1._id,
+      action: 'DOCUMENTS_COMPARED',
+      req,
+      description: `Compared document '${doc1.fileMetadata?.originalFilename || doc1._id}' with document '${doc2.fileMetadata?.originalFilename || doc2._id}'.`,
+      details: {
+        comparedWith: doc2._id,
+        summary: comparison.summary
+      },
+      outcome: 'SUCCESS'
+    });
+
+    return res.json(comparison);
+  } catch (err) {
+    const status = err.statusCode || 500;
+    return res.status(status).json({ error: err.message || 'Failed to compare documents.' });
   }
 });
 

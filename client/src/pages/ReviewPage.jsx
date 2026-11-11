@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   assignDocument,
   fetchDocumentById,
+  fetchDocuments,
   fetchUsers,
   getDocumentFileUrl,
   processDocument,
@@ -17,6 +18,7 @@ import StatusBadge from '../components/StatusBadge';
 import VersionHistoryTab from '../components/VersionHistoryTab';
 import OwnershipHistoryTab from '../components/OwnershipHistoryTab';
 import GisValidationTab from '../components/GisValidationTab';
+import DocumentComparisonModal from '../components/DocumentComparisonModal';
 import {
   ArrowLeft,
   Save,
@@ -58,11 +60,6 @@ const formatConfidenceValue = (value) => {
 
   const normalized = value > 1 ? value / 100 : value;
   return `${normalized.toFixed(2)} / 1.00`;
-};
-
-const getOverallConfidence = (record) => {
-  const value = record?.ocrResult?.meanConfidence;
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 };
 
 const normalizeLandDetails = (details = {}) => ({
@@ -108,6 +105,20 @@ export default function ReviewPage() {
   // Phase 4 Duplicate & Conflict Detection State
   const [isAnalyzingConflicts, setIsAnalyzingConflicts] = useState(false);
   const [conflictActionMessage, setConflictActionMessage] = useState(null);
+
+  // Cross-Document Comparison State
+  const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+  const [accessibleDocuments, setAccessibleDocuments] = useState([]);
+
+  const handleOpenComparison = async () => {
+    try {
+      const docs = await fetchDocuments();
+      setAccessibleDocuments(docs || []);
+    } catch (err) {
+      console.warn('Could not load accessible documents for comparison:', err.message);
+    }
+    setIsCompareModalOpen(true);
+  };
 
   // Tab State
   const [activeTab, setActiveTab] = useState('fields'); // 'fields', 'versions', 'ownership', 'conflicts', 'audit', 'gis'
@@ -361,7 +372,6 @@ export default function ReviewPage() {
     );
   }
 
-  const overallConfidence = getOverallConfidence(record);
   const fieldConfidenceEntries = [
     { key: 'ownerName', label: 'Owner Name' },
     { key: 'khasraNumber', label: 'Khasra / Survey Number' },
@@ -452,7 +462,14 @@ export default function ReviewPage() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            onClick={handleOpenComparison}
+            className="btn btn-secondary"
+            title="Compare this document side-by-side with another record"
+          >
+            <GitCompare size={16} /> Compare Document
+          </button>
           {saveMessage && (
             <span style={{ color: '#15803d', fontSize: '0.85rem', fontWeight: 600 }}>
               {saveMessage}
@@ -945,60 +962,57 @@ export default function ReviewPage() {
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0.5rem' }}>
                 <Cpu size={16} color="var(--primary)" />
-                <strong style={{ fontSize: '0.88rem' }}>Confidence</strong>
+                <strong style={{ fontSize: '0.88rem' }}>Extraction Verification & Confidence</strong>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
-                <div style={{ background: '#ffffff', border: '1px solid var(--border)', borderRadius: '6px', padding: '0.6rem 0.75rem' }}>
-                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                    Overall extraction confidence
+              {/* Validation Verification Checks & Discrepancies */}
+              {validation && (
+                <div style={{ marginBottom: '0.9rem' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 600, marginBottom: '0.5rem' }}>
+                    Extraction Consistency Checks
                   </div>
-                  <div style={{ fontWeight: 700, marginTop: '0.25rem', fontSize: '0.95rem' }}>
-                    {overallConfidence !== null ? formatConfidenceValue(overallConfidence) : 'Not available'}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '0.5rem' }}>
+                    {Object.entries(validation.categories || {}).map(([key, category]) => {
+                      const allPassed = category.passedChecks === category.totalChecks;
+                      return (
+                        <div
+                          key={key}
+                          style={{
+                            fontSize: '0.75rem',
+                            padding: '0.45rem 0.65rem',
+                            background: allPassed ? '#f0fdf4' : '#fffbeb',
+                            border: `1px solid ${allPassed ? '#bbf7d0' : '#fde68a'}`,
+                            borderRadius: '6px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: '6px'
+                          }}
+                        >
+                          <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                            {key.replace(/([A-Z])/g, ' $1')}
+                          </span>
+                          <span style={{ fontSize: '0.72rem', color: allPassed ? '#166534' : '#92400e', fontWeight: 600 }}>
+                            {allPassed ? '✓ Passed' : `${category.passedChecks}/${category.totalChecks} passed`}
+                          </span>
+                        </div>
+                      );
+                    })}
                   </div>
-                </div>
 
-                <div style={{ background: '#ffffff', border: '1px solid var(--border)', borderRadius: '6px', padding: '0.6rem 0.75rem' }}>
-                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                    Validation TrustScore
-                  </div>
-                  <div style={{ fontWeight: 700, marginTop: '0.25rem', fontSize: '0.95rem' }}>
-                    Not available
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ marginTop: '0.75rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                {overallConfidence !== null
-                  ? `Extraction confidence is reported by the selected engine and is not treated as a validated trust score.`
-                  : 'Gemini model output is intentionally kept uncalibrated, so no numeric confidence is displayed unless a separate scoring pipeline is provided.'}
-              </div>
-
-              {validation?.score !== null && validation?.score !== undefined && (
-                <div style={{ marginTop: '0.9rem', borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
-                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                    Extraction Validation Score
-                  </div>
-                  <div style={{ fontWeight: 700, fontSize: '1.2rem', marginTop: '0.2rem' }}>
-                    {Number(validation.score).toFixed(0)} / 100
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.5rem', marginTop: '0.6rem' }}>
-                    {Object.entries(validation.categories || {}).map(([key, category]) => (
-                      <div key={key} style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        <strong>{key.replace(/([A-Z])/g, ' $1')}</strong>: {Number(category.score || 0).toFixed(0)} / {category.weight}
-                      </div>
-                    ))}
-                  </div>
                   {(validation.reviewReasons || []).length > 0 && (
-                    <div style={{ marginTop: '0.65rem', color: '#92400e', fontSize: '0.75rem' }}>
-                      <strong>Review warnings:</strong>
-                      <ul style={{ margin: '0.25rem 0 0 1rem', padding: 0 }}>
-                        {validation.reviewReasons.slice(0, 5).map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}
+                    <div style={{ marginTop: '0.65rem', color: '#92400e', fontSize: '0.75rem', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '6px', padding: '0.55rem 0.8rem' }}>
+                      <strong>Review warnings & discrepancies:</strong>
+                      <ul style={{ margin: '0.25rem 0 0 1.1rem', padding: 0 }}>
+                        {validation.reviewReasons.slice(0, 5).map((reason, index) => (
+                          <li key={`${reason}-${index}`}>{reason}</li>
+                        ))}
                       </ul>
                     </div>
                   )}
-                  <div style={{ marginTop: '0.65rem', color: 'var(--text-muted)', fontSize: '0.72rem' }}>
-                    {validation.disclaimer || 'This score supports extraction review only; manual/legal verification may still be required.'}
+
+                  <div style={{ marginTop: '0.55rem', color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+                    {validation.disclaimer || 'Validation checks measure extraction consistency only; manual/legal verification may still be required.'}
                   </div>
                 </div>
               )}
@@ -1473,7 +1487,14 @@ export default function ReviewPage() {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
               <div className="field-group">
-                <label className="field-label">District (जिला / జిల్లా)</label>
+                <div className="field-label-row">
+                  <label className="field-label">District (जिला / జిల్లా)</label>
+                  {formData.district.confidence !== null && (
+                    <span className="confidence-meter">
+                      {(formData.district.confidence * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </div>
                 <input
                   type="text"
                   className={`field-input ${formData.district.isFlagged ? 'field-flagged' : ''}`}
@@ -1485,7 +1506,14 @@ export default function ReviewPage() {
               </div>
 
               <div className="field-group">
-                <label className="field-label">Tehsil (तहसील / మండలం)</label>
+                <div className="field-label-row">
+                  <label className="field-label">Tehsil (तहसील / మండలం)</label>
+                  {formData.tehsil.confidence !== null && (
+                    <span className="confidence-meter">
+                      {(formData.tehsil.confidence * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </div>
                 <input
                   type="text"
                   className={`field-input ${formData.tehsil.isFlagged ? 'field-flagged' : ''}`}
@@ -1497,7 +1525,14 @@ export default function ReviewPage() {
               </div>
 
               <div className="field-group">
-                <label className="field-label">Village (ग्राम / గ్రామం)</label>
+                <div className="field-label-row">
+                  <label className="field-label">Village (ग्राम / గ్రామం)</label>
+                  {formData.village.confidence !== null && (
+                    <span className="confidence-meter">
+                      {(formData.village.confidence * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </div>
                 <input
                   type="text"
                   className={`field-input ${formData.village.isFlagged ? 'field-flagged' : ''}`}
@@ -1520,6 +1555,11 @@ export default function ReviewPage() {
                     </span>
                   )}
                 </div>
+                {formData.landClassification.confidence !== null && (
+                  <span className="confidence-meter">
+                    {(formData.landClassification.confidence * 100).toFixed(0)}%
+                  </span>
+                )}
               </div>
               <input
                 type="text"
@@ -1777,6 +1817,14 @@ export default function ReviewPage() {
           </div>
         </div>
       </div>
+
+      {/* Side-by-Side Document Comparison Modal */}
+      <DocumentComparisonModal
+        isOpen={isCompareModalOpen}
+        onClose={() => setIsCompareModalOpen(false)}
+        initialDocA={record}
+        availableDocuments={accessibleDocuments}
+      />
     </div>
   );
 }

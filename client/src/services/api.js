@@ -158,6 +158,10 @@ export async function compareDocumentVersions(id, fromVersion, toVersion) {
   return apiRequest(`/api/documents/${id}/versions/compare?from=${fromVersion}&to=${toVersion}`);
 }
 
+export async function compareDocuments(doc1Id, doc2Id) {
+  return apiRequest(`/api/documents/compare?doc1=${encodeURIComponent(doc1Id)}&doc2=${encodeURIComponent(doc2Id)}`);
+}
+
 export async function replaceDocumentFile(id, file, { changeReason = '' } = {}) {
   const formData = new FormData();
   formData.append('file', file);

@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import StatusBadge from '../components/StatusBadge';
 import { fetchDocuments } from '../services/api';
 import { useAuth } from '../context/auth-context';
-import { Upload, Eye, FileText, Search, X, Loader, AlertCircle, RefreshCw } from 'lucide-react';
+import { Upload, Eye, FileText, Search, X, Loader, AlertCircle, RefreshCw, GitCompare } from 'lucide-react';
+import DocumentComparisonModal from '../components/DocumentComparisonModal';
 
 export default function RecordsListPage() {
   const { user } = useAuth();
@@ -13,6 +14,43 @@ export default function RecordsListPage() {
   const [error, setError] = useState(null);
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Cross-Document Selection & Comparison State
+  const [selectedDocIds, setSelectedDocIds] = useState([]);
+  const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+  const [compareDocA, setCompareDocA] = useState(null);
+  const [compareDocB, setCompareDocB] = useState(null);
+
+  const handleToggleSelect = (docId) => {
+    setSelectedDocIds(prev => {
+      if (prev.includes(docId)) {
+        return prev.filter(id => id !== docId);
+      }
+      if (prev.length >= 2) {
+        return [prev[0], docId];
+      }
+      return [...prev, docId];
+    });
+  };
+
+  const handleClearSelection = () => {
+    setSelectedDocIds([]);
+  };
+
+  const handleOpenCompareSelected = () => {
+    if (selectedDocIds.length >= 2) {
+      setCompareDocA(selectedDocIds[0]);
+      setCompareDocB(selectedDocIds[1]);
+      setIsCompareModalOpen(true);
+    }
+  };
+
+  const handleQuickCompare = (record) => {
+    setCompareDocA(record._id);
+    const otherId = selectedDocIds.find(id => id !== record._id);
+    setCompareDocB(otherId || null);
+    setIsCompareModalOpen(true);
+  };
 
   const loadDocuments = async () => {
     setIsLoading(true);
@@ -154,6 +192,60 @@ export default function RecordsListPage() {
         </div>
       </div>
 
+      {/* Document Selection & Comparison Action Bar */}
+      {selectedDocIds.length > 0 && (
+        <div
+          style={{
+            background: '#f0fdf4',
+            border: '1px solid #bbf7d0',
+            borderRadius: 'var(--radius)',
+            padding: '0.75rem 1.25rem',
+            marginBottom: '1rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '12px'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem' }}>
+            <GitCompare size={18} color="#16a34a" />
+            <span>
+              {selectedDocIds.length === 1 ? (
+                <span>
+                  <strong>1 document selected.</strong> Select a second document from the table below to compare side by side.
+                </span>
+              ) : (
+                <span>
+                  <strong>2 documents selected for side-by-side comparison:</strong>{' '}
+                  <em>{records.find(r => r._id === selectedDocIds[0])?.fileMetadata?.originalFilename || 'Document 1'}</em> vs{' '}
+                  <em>{records.find(r => r._id === selectedDocIds[1])?.fileMetadata?.originalFilename || 'Document 2'}</em>
+                </span>
+              )}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={handleClearSelection}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem' }}
+            >
+              Clear Selection
+            </button>
+            {selectedDocIds.length === 2 && (
+              <button
+                onClick={handleOpenCompareSelected}
+                className="btn btn-primary"
+                style={{ fontSize: '0.8rem', padding: '0.35rem 0.85rem', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+              >
+                <GitCompare size={15} /> Compare Selected Documents
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Loading State */}
       {isLoading ? (
         <div className="card" style={{ textAlign: 'center', padding: '3.5rem', color: 'var(--text-muted)' }}>
@@ -180,6 +272,9 @@ export default function RecordsListPage() {
           <table className="data-table">
             <thead>
               <tr>
+                <th style={{ width: '44px', textAlign: 'center' }}>
+                  <span title="Select documents to compare">Select</span>
+                </th>
                 <th>Document Details</th>
                 <th>Owner Name</th>
                 <th>Khasra / Khata</th>
@@ -192,13 +287,22 @@ export default function RecordsListPage() {
             <tbody>
               {filteredRecords.length === 0 ? (
                 <tr>
-                  <td colSpan="7" style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
+                  <td colSpan="8" style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
                     No matching records found for "{searchQuery}".
                   </td>
                 </tr>
               ) : (
                 filteredRecords.map(record => (
-                  <tr key={record._id}>
+                  <tr key={record._id} style={{ background: selectedDocIds.includes(record._id) ? '#f0fdf4' : 'inherit' }}>
+                    <td style={{ textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedDocIds.includes(record._id)}
+                        onChange={() => handleToggleSelect(record._id)}
+                        aria-label={`Select ${record.fileMetadata?.originalFilename || 'document'} for comparison`}
+                        style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: 'var(--primary)' }}
+                      />
+                    </td>
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <FileText size={18} color="var(--primary)" />
@@ -241,13 +345,24 @@ export default function RecordsListPage() {
                       <StatusBadge status={record.status} />
                     </td>
                     <td style={{ textAlign: 'right' }}>
-                      <Link 
-                        to={`/records/${record._id}`} 
-                        className="btn btn-secondary" 
-                        style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
-                      >
-                        <Eye size={14} /> {user?.role === 'Citizen' ? 'View Details' : 'Open Review'}
-                      </Link>
+                      <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleQuickCompare(record)}
+                          className="btn btn-secondary"
+                          style={{ padding: '0.35rem 0.65rem', fontSize: '0.8rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                          title="Compare with another document"
+                        >
+                          <GitCompare size={13} /> Compare
+                        </button>
+                        <Link
+                          to={`/records/${record._id}`}
+                          className="btn btn-secondary"
+                          style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
+                        >
+                          <Eye size={14} /> {user?.role === 'Citizen' ? 'View Details' : 'Open Review'}
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -256,6 +371,15 @@ export default function RecordsListPage() {
           </table>
         </div>
       )}
+
+      {/* Side-by-Side Document Comparison Modal */}
+      <DocumentComparisonModal
+        isOpen={isCompareModalOpen}
+        onClose={() => setIsCompareModalOpen(false)}
+        initialDocA={compareDocA}
+        initialDocB={compareDocB}
+        availableDocuments={records}
+      />
     </div>
   );
 }

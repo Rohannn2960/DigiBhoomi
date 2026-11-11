@@ -1,12 +1,28 @@
 const mongoose = require('mongoose');
 
-// Reusable sub-schema for individual extracted land fields
+// Reusable sub-schema for standard individual extracted land fields
 const ExtractedFieldSchema = new mongoose.Schema({
   value: { type: String, default: '' },
   rawText: { type: String, default: null },
   rawOcrText: { type: String, default: null },
   confidence: { type: Number, default: null }, // e.g. 0.0 to 1.0 (null for Gemini unless verified)
   confidenceSource: { type: String, default: null }, // e.g., 'GEMINI_MULTIMODAL', 'OCR_ENGINE', 'MANUAL_OVERRIDE'
+  isFlagged: { type: Boolean, default: false },
+  reviewStatus: {
+    type: String,
+    enum: ['Unreviewed', 'Accepted', 'Corrected', 'Rejected'],
+    default: 'Unreviewed'
+  }
+}, { _id: false });
+
+// Dedicated sub-schema for extracted area field supporting both value and an optional unit
+const ExtractedAreaFieldSchema = new mongoose.Schema({
+  value: { type: String, default: '' },
+  unit: { type: String },
+  rawText: { type: String, default: null },
+  rawOcrText: { type: String, default: null },
+  confidence: { type: Number, default: null },
+  confidenceSource: { type: String, default: null },
   isFlagged: { type: Boolean, default: false },
   reviewStatus: {
     type: String,
@@ -148,7 +164,7 @@ const DocumentSchema = new mongoose.Schema({
     surveyNumber: { type: ExtractedFieldSchema, default: () => ({}) },
     khasraNumber: { type: ExtractedFieldSchema, default: () => ({}) },
     khataNumber: { type: ExtractedFieldSchema, default: () => ({}) },
-    area: { type: ExtractedFieldSchema, default: () => ({}) },
+    area: { type: ExtractedAreaFieldSchema, default: () => ({}) },
     areaUnit: { type: ExtractedFieldSchema, default: () => ({}) },
     landArea: {
       value: { type: String, default: '' },
